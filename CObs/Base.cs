@@ -226,7 +226,7 @@ namespace CObs
             /* read raw source data */
             using (StreamReader sr = new StreamReader(pFileName))
             {
-                string line;
+                string? line;
 
                 while ((line = sr.ReadLine()) != null)
                 {
