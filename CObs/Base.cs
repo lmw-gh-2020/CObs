@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using System.Linq;
-using System.IO;
 
 /*
 *
@@ -17,6 +17,7 @@ namespace CObs
     public enum SourceRowValidationStatus
     {
          OK
+        ,ExceptionReadingEvents
         ,WrongNumberOfColumns
         ,DateUnreadable
         ,DateNotContiguous
@@ -44,7 +45,7 @@ namespace CObs
             ,SourceRowValidationStatus pRowStatus
         ) {
             SourceOK  = pSourceOK;
-            RowNumber = pIndex + 1;
+            RowNumber = pIndex;
             RowStatus = pRowStatus;
         }
     }
@@ -69,6 +70,18 @@ namespace CObs
             Positivity       = Double.Parse(  pRaw[3]);
             Mortality        = Int32.Parse(   pRaw[4]);
             Hospitalizations = Int32.Parse(   pRaw[5]);
+        }
+
+        public DayRaw(int pIndex, SourceDay pDay)
+        {
+            TimelineIndex    = pIndex;
+
+            Date             = DateTime.Parse(pDay.Date!);
+            DNC              = pDay.DNC;
+            Tests            = pDay.Tests;
+            Positivity       = pDay.Positivity;
+            Mortality        = pDay.Mortality;
+            Hospitalizations = pDay.Hospitalizations;
         }
     }
 
@@ -127,33 +140,29 @@ namespace CObs
 
     public class BaseDays
     {
+        public IReadEventsAsync ReadAdapter { get; private set; }
         public List<DayRaw>     DaysRaw     { get; private set; }
         public List<DayRolling> DaysRolling { get; private set; }
 
-        public BaseDays()
+        public BaseDays(IReadEventsAsync pReadAdapter)
         {
+            ReadAdapter = pReadAdapter;
+
             DaysRaw     = new List<DayRaw>();
             DaysRolling = new List<DayRolling>();
         }
 
-        private SourceRowValidationStatus validateSourceRow(
+        public static SourceRowValidationStatus ValidateSourceRow(
              List<string> pRow
             ,DateTime?    pLastDate
         ) {
             /* validate a row of source data */
-            DateTime date;
-            int      dnc;
-            int      tests;
-            double   positivity;
-            int      mortality;
-            int      hospitalizations;
-
             if (pRow.Count != 6)
             {
                 return SourceRowValidationStatus.WrongNumberOfColumns;
             }
 
-            if (!DateTime.TryParse(pRow[0], out date))
+            if (!DateTime.TryParse(pRow[0], out DateTime date))
             {
                 return SourceRowValidationStatus.DateUnreadable;
             }
@@ -165,7 +174,7 @@ namespace CObs
                 return SourceRowValidationStatus.DateNotContiguous;
             }
 
-            if (!int.TryParse(pRow[1], out dnc))
+            if (!int.TryParse(pRow[1], out int dnc))
             {
                 return SourceRowValidationStatus.DNCUnreadable;
             }
@@ -175,7 +184,7 @@ namespace CObs
                 return SourceRowValidationStatus.DNCNegative;
             }
 
-            if (!int.TryParse(pRow[2], out tests))
+            if (!int.TryParse(pRow[2], out int tests))
             {
                 return SourceRowValidationStatus.TestsUnreadable;
             }
@@ -185,7 +194,7 @@ namespace CObs
                 return SourceRowValidationStatus.TestsNegative;
             }
 
-            if (!double.TryParse(pRow[3], out positivity))
+            if (!double.TryParse(pRow[3], out double positivity))
             {
                 return SourceRowValidationStatus.PositivityUnreadable;
             }
@@ -195,7 +204,7 @@ namespace CObs
                 return SourceRowValidationStatus.PositivityNotBetweenZeroAndOneHundred;
             }
 
-            if (!int.TryParse(pRow[4], out mortality))
+            if (!int.TryParse(pRow[4], out int mortality))
             {
                 return SourceRowValidationStatus.MortalityUnreadable;
             }
@@ -205,7 +214,7 @@ namespace CObs
                 return SourceRowValidationStatus.MortalityNegative;
             }
 
-            if (!int.TryParse(pRow[5], out hospitalizations))
+            if (!int.TryParse(pRow[5], out int hospitalizations))
             {
                 return SourceRowValidationStatus.HospitalizationsUnreadable;
             }
@@ -218,48 +227,81 @@ namespace CObs
             return SourceRowValidationStatus.OK;
         }
 
-        public SourceValidationStatus ReadDaysRaw(string pFileName)
-        {
-            int       index    = 0;
-            DateTime? lastDate = null;
-
-            /* read raw source data */
-            using (StreamReader sr = new StreamReader(pFileName))
+        public static SourceRowValidationStatus ValidateSourceEvent(
+             SourceDay pDay
+            ,DateTime? pLastDate
+        ) {
+            /* validate a source data event */
+            if (!DateTime.TryParse(pDay.Date, out DateTime date))
             {
-                string? line;
-
-                while ((line = sr.ReadLine()) != null)
-                {
-                    List<string> row = line.Split(',').ToList().Select(
-                        entry => entry.Trim()
-                    ).ToList();
-
-                    SourceRowValidationStatus status = validateSourceRow(row, lastDate);
-
-                    if (status != SourceRowValidationStatus.OK)
-                    {
-                        /* report validation error */
-                        return new SourceValidationStatus(false, index, status);
-                    }
-
-                    DayRaw day = new DayRaw(index, row);
-
-                    DaysRaw.Add(day);
-
-                    lastDate = day.Date;
-
-                    index++;
-                }
+                return SourceRowValidationStatus.DateUnreadable;
             }
 
+            if (
+                (pLastDate != null)
+            &&  (date.Date != pLastDate.Value.Date.AddDays(1))
+            ) {
+                return SourceRowValidationStatus.DateNotContiguous;
+            }
+
+            if (pDay.DNC < 0)
+            {
+                return SourceRowValidationStatus.DNCNegative;
+            }
+
+            if (pDay.Tests < 0)
+            {
+                return SourceRowValidationStatus.TestsNegative;
+            }
+
+            if (!(pDay.Positivity >= 0 && pDay.Positivity <= 100))
+            {
+                return SourceRowValidationStatus.PositivityNotBetweenZeroAndOneHundred;
+            }
+
+            if (pDay.Mortality < 0)
+            {
+                return SourceRowValidationStatus.MortalityNegative;
+            }
+
+            if (pDay.Hospitalizations < 0)
+            {
+                return SourceRowValidationStatus.HospitalizationsNegative;
+            }
+
+            return SourceRowValidationStatus.OK;
+        }
+
+        public async Task<IReadActionResult> ReadDaysRawAsync()
+        {
+            var readResult = await ReadAdapter.ReadDaysRawAsync();
+
+            if (readResult == null)
+            {
+                return new ReadActionResult(
+                     false
+                    ,"(unexpected null read result)"
+                    ,new SourceValidationStatus(
+                         false
+                        ,0
+                        ,SourceRowValidationStatus.ExceptionReadingEvents
+                    )
+                    ,new List<DayRaw>()
+                );
+            }
+
+            DaysRaw = readResult.DaysRaw;
+
+            return readResult;
+        }
+
+        public void PopulateRolling()
+        {
             /* populate rolling averages */
             foreach (DayRaw raw in DaysRaw)
             {
                 DaysRolling.Add(new DayRolling(raw.TimelineIndex, DaysRaw));
             }
-
-            /* report successful load */
-            return new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK);
         }
     }
 }

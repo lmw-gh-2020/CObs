@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading.Tasks;
 using System.Linq;
 
 /*
@@ -14,88 +15,98 @@ namespace CObs
 {
     class Program
     {
-        static void reportValidationError(SourceValidationStatus pStatus)
+        static void ReportValidationError(SourceValidationStatus pStatus)
         {
             if (!pStatus.SourceOK)
             {
-                string error;
-
                 Console.WriteLine(
-                    "CObs build: validation error reading SourceData.txt on line "
+                    "CObs build: validation error reading Source Data at row "
                   + pStatus.RowNumber
                   + "."
                 );
 
-                switch (pStatus.RowStatus)
-                {
-                    case SourceRowValidationStatus.WrongNumberOfColumns:
-                        error = "had wrong number of columns";
-                        break;
-                    case SourceRowValidationStatus.DateUnreadable:
-                        error = "had unreadable date";
-                        break;
-                    case SourceRowValidationStatus.DateNotContiguous:
-                        error = "date was not contiguous with previous row";
-                        break;
-                    case SourceRowValidationStatus.DNCUnreadable:
-                        error = "had unreadable DNC";
-                        break;
-                    case SourceRowValidationStatus.DNCNegative:
-                        error = "had negative DNC";
-                        break;
-                    case SourceRowValidationStatus.TestsUnreadable:
-                        error = "had unreadable Tests";
-                        break;
-                    case SourceRowValidationStatus.TestsNegative:
-                        error = "had negative Tests";
-                        break;
-                    case SourceRowValidationStatus.PositivityUnreadable:
-                        error = "had unreadable Positivity";
-                        break;
-                    case SourceRowValidationStatus.PositivityNotBetweenZeroAndOneHundred:
-                        error = "had Positivity not between 0 and 100";
-                        break;
-                    case SourceRowValidationStatus.MortalityUnreadable:
-                        error = "had unreadable Mortality";
-                        break;
-                    case SourceRowValidationStatus.MortalityNegative:
-                        error = "had negative Mortality";
-                        break;
-                    case SourceRowValidationStatus.HospitalizationsUnreadable:
-                        error = "had unreadable Hospitalizations";
-                        break;
-                    case SourceRowValidationStatus.HospitalizationsNegative:
-                        error = "had negative Hospitalizations";
-                        break;
-                    default:
-                        error = "had unknown error";
-                        break;
-                }
+                string error = pStatus.RowStatus switch {
+                     SourceRowValidationStatus.OK
+                        => "no errors found"
+                    ,SourceRowValidationStatus.ExceptionReadingEvents
+                        => "couldn't read source data events"
+                    ,SourceRowValidationStatus.WrongNumberOfColumns
+                        => "had wrong number of columns"
+                    ,SourceRowValidationStatus.DateUnreadable
+                        => "had unreadable date"
+                    ,SourceRowValidationStatus.DateNotContiguous
+                        => "date was not contiguous with previous row"
+                    ,SourceRowValidationStatus.DNCUnreadable
+                        => "had unreadable DNC"
+                    ,SourceRowValidationStatus.DNCNegative
+                        => "had negative DNC"
+                    ,SourceRowValidationStatus.TestsUnreadable
+                        => "had unreadable Tests"
+                    ,SourceRowValidationStatus.TestsNegative
+                        => "had negative Tests"
+                    ,SourceRowValidationStatus.PositivityUnreadable
+                        => "had unreadable Positivity"
+                    ,SourceRowValidationStatus.PositivityNotBetweenZeroAndOneHundred
+                        => "had Positivity not between 0 and 100"
+                    ,SourceRowValidationStatus.MortalityUnreadable
+                        => "had unreadable Mortality"
+                    ,SourceRowValidationStatus.MortalityNegative
+                        => "had negative Mortality"
+                    ,SourceRowValidationStatus.HospitalizationsUnreadable
+                        => "had unreadable Hospitalizations"
+                    ,SourceRowValidationStatus.HospitalizationsNegative
+                        => "had negative Hospitalizations"
+                    ,_
+                        => "had unknown error"
+                };
 
                 Console.WriteLine("CObs build: row " + error + ".");
             }
         }
 
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             /*
                 Process command line arguments and run build.
             */
-            Builder builder   = new Builder(new AllScenarios(new BaseDays()));
-            bool    keyToExit = !((args.Length > 0) && (args[0] == "nokey"));
+            bool keyToExit = !args.ToList().Any(arg => arg == "nokey");
+            bool eventdb   = args.ToList().Any(arg => arg == "eventdb");
+            bool series    = args.ToList().Any(arg => arg == "series");
 
-            Console.WriteLine(
-                "CObs build: reading daily data and computing rolling averages..."
+            var builder = new Builder(
+                 new ResultsToFile()
+                ,new AllScenarios(
+                    new BaseDays(
+                        eventdb ? new SourceFromEvents() : new SourceFromFile()
+                    )
+                )
             );
 
-            SourceValidationStatus status = builder.ReadDaysRaw("SourceData.txt");
+            Console.WriteLine(
+                "CObs build: reading daily source data..."
+            );
+
+            IReadActionResult status = await builder.ReadDaysRawAsync();
 
             if (
-                (!status.SourceOK)
+                (!status.Success)
             ||  (builder.BaseDays.DaysRaw.Count
                     <= builder.Scenarios.MedianTimeToMortalityValues.Max())
             ) {
-                if (!status.SourceOK) { reportValidationError(status); }
+                if (!status.Success)
+                {
+                    if (status.Status.RowNumber == 0)
+                    {
+                        Console.WriteLine(
+                            "CObs build: access exception reading Source Data: "
+                          + status.Message
+                        );
+                    }
+                    else
+                    {
+                        ReportValidationError(status.Status);
+                    }
+                }
                 else
                 {
                     Console.WriteLine(
@@ -118,6 +129,12 @@ namespace CObs
 
                 Environment.Exit(1);
             }
+
+            Console.WriteLine(
+                "CObs build: populating rolling averages..."
+            );
+
+            builder.PopulateRolling();
 
             Console.WriteLine(
                 "CObs build: generating scenarios..."
@@ -144,10 +161,16 @@ namespace CObs
             builder.ExtractAggregates();
 
             Console.WriteLine(
-                "CObs build: writing results..."
+                "CObs build: committing results..."
             );
 
             builder.WriteResults();
+
+            Console.WriteLine(
+                "CObs build: committing aggregates..."
+            );
+
+            builder.WriteAggregates();
 
             Console.WriteLine("CObs build: Done.");
 
