@@ -92,16 +92,16 @@ namespace CObs
 
     public class Builder
     {
-        public ICommitEvents     CommitAdapter { get; private set; }
-        public BaseDays          BaseDays      { get; private set; }
-        public AllScenarios      Scenarios     { get; private set; }
+        public ICommitEventsAsync CommitAdapter { get; private set; }
+        public BaseDays           BaseDays      { get; private set; }
+        public AllScenarios       Scenarios     { get; private set; }
 
-        private List<ResultsDay> ResultsDays   { get; set; }
-        private Aggregates       Aggregates    { get; set; }
+        private List<ResultsDay>  ResultsDays   { get; set; }
+        private Aggregates        Aggregates    { get; set; }
 
         public Builder(
-             ICommitEvents pCommitAdapter
-            ,AllScenarios  pScenarios
+             ICommitEventsAsync pCommitAdapter
+            ,AllScenarios       pScenarios
         ) {
             CommitAdapter = pCommitAdapter;
             BaseDays      = pScenarios.BaseDays;
@@ -479,14 +479,14 @@ namespace CObs
             }
         }
 
-        public ICommitActionResult WriteResults()
+        public async Task<ICommitActionResult> CommitResultsAsync()
         {
-            return CommitAdapter.CommitResults(ResultsDays);
+            return await CommitAdapter.CommitResultsAsync(ResultsDays);
         }
 
-        public ICommitActionResult WriteAggregates()
+        public async Task<ICommitActionResult> CommitAggregatesAsync()
         {
-            return CommitAdapter.CommitAggregates(Aggregates);
+            return await CommitAdapter.CommitAggregatesAsync(Aggregates);
         }
     }
 }

@@ -28,10 +28,10 @@ namespace CObs
         string Message { get; }
     }
 
-    public interface ICommitEvents
+    public interface ICommitEventsAsync
     {
-        ICommitActionResult CommitResults(List<ResultsDay> pResultsDays);
-        ICommitActionResult CommitAggregates(Aggregates pAggregates);
+        Task<ICommitActionResult> CommitResultsAsync(List<ResultsDay> pResultsDays);
+        Task<ICommitActionResult> CommitAggregatesAsync(Aggregates pAggregates);
     }
 
     class ReadActionResult : IReadActionResult
@@ -145,9 +145,9 @@ namespace CObs
         }
     }
 
-    public class ResultsToFile : ICommitEvents
+    public class ResultsToFile : ICommitEventsAsync
     {
-        public ICommitActionResult CommitResults(List<ResultsDay> pResultsDays)
+        public async Task<ICommitActionResult> CommitResultsAsync(List<ResultsDay> pResultsDays)
         {
             try
             {
@@ -218,8 +218,8 @@ namespace CObs
                           + " ,"
                           + day.DoublingTimeUpperBound;
 
-                        w.WriteLine(line);
-                        w.Flush();
+                        await w.WriteLineAsync(line);
+                        await w.FlushAsync();
                     }
 
                     w.Close();
@@ -238,7 +238,7 @@ namespace CObs
             return new CommitActionResult(true, "");
         }
 
-        public ICommitActionResult CommitAggregates(Aggregates pAggregates)
+        public async Task<ICommitActionResult> CommitAggregatesAsync(Aggregates pAggregates)
         {
             try
             {
@@ -271,8 +271,9 @@ namespace CObs
                       + " ,"
                       + pAggregates.ProjectedTotalMortalityUpperBound;
 
-                    w.WriteLine(line);
-                    w.Flush();
+                    await w.WriteLineAsync(line);
+                    await w.FlushAsync();
+
                     w.Close();
                 }
 
@@ -292,6 +293,10 @@ namespace CObs
 
     public class SourceFromEvents : IReadEventsAsync
     {
+        public EventStoreClient Client { get; private set; }
+
+        public SourceFromEvents(EventStoreClient pClient) { Client = pClient; }
+
         public async Task<IReadActionResult> ReadDaysRawAsync()
         {
             var daysRaw                   = new List<DayRaw>();
@@ -301,13 +306,7 @@ namespace CObs
 
             try
             {
-                var client = new EventStoreClient(
-                    EventStoreClientSettings.Create(
-                        "esdb://localhost:2113?tls=false"
-                    )
-                );
-
-                var result = client.ReadStreamAsync(
+                var result = Client.ReadStreamAsync(
                      Direction.Forwards
                     , "outbreak"
                     , StreamPosition.Start
@@ -391,6 +390,69 @@ namespace CObs
                 ,new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
                 ,daysRaw
             );
+        }
+    }
+
+    public class ResultsToEvents : ICommitEventsAsync
+    {
+        public EventStoreClient Client { get; private set; }
+
+        public ResultsToEvents(EventStoreClient pClient) { Client = pClient; }
+
+        public async Task<ICommitActionResult> CommitResultsAsync(List<ResultsDay> pResultsDays)
+        {
+            var results = pResultsDays.Select(day => {
+                return new EventData(
+                     Uuid.NewUuid()
+                    ,"results-day-received"
+                    ,JsonSerializer.SerializeToUtf8Bytes(day)
+                );
+            }).ToList();
+
+            try
+            {
+                await Client.AppendToStreamAsync(
+                    "results"
+                    ,StreamState.Any
+                    ,results
+                );
+            }
+            catch (Exception e)
+            {
+                return new CommitActionResult(
+                     false
+                    ,"exception writing results to store: " + e.Message
+                );
+            }
+
+            return new CommitActionResult(true, "");
+        }
+
+        public async Task<ICommitActionResult> CommitAggregatesAsync(Aggregates pAggregates)
+        {
+            var aggregates = new EventData(
+                 Uuid.NewUuid()
+                ,"aggregates-received"
+                ,JsonSerializer.SerializeToUtf8Bytes(pAggregates)
+            );
+
+            try
+            {
+                await Client.AppendToStreamAsync(
+                    "aggregates"
+                    ,StreamState.Any
+                    ,new List<EventData> { aggregates }
+                );
+            }
+            catch (Exception e)
+            {
+                return new CommitActionResult(
+                     false
+                    ,"exception writing aggregates to store: " + e.Message
+                );
+            }
+
+            return new CommitActionResult(true, "");
         }
     }
 }

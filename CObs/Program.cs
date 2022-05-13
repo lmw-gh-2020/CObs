@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Threading.Tasks;
 using System.Linq;
+using EventStore.Client;
 
 /*
 *
@@ -15,6 +16,8 @@ namespace CObs
 {
     class Program
     {
+
+
         static void ReportValidationError(SourceValidationStatus pStatus)
         {
             if (!pStatus.SourceOK)
@@ -70,14 +73,25 @@ namespace CObs
                 Process command line arguments and run build.
             */
             bool keyToExit = !args.ToList().Any(arg => arg == "nokey");
-            bool eventdb   = args.ToList().Any(arg => arg == "eventdb");
-            bool series    = args.ToList().Any(arg => arg == "series");
+            bool eventdb   = args.ToList().Any( arg => arg == "eventdb");
+            bool series    = args.ToList().Any( arg => arg == "series");
+
+            EventStoreClient? client = null;
+
+            if (eventdb)
+            {
+                client = new EventStoreClient(
+                    EventStoreClientSettings.Create(
+                        "esdb://localhost:2113?tls=false"
+                    )
+                );
+            }
 
             var builder = new Builder(
-                 new ResultsToFile()
+                 (eventdb ? new ResultsToEvents(client!) : new ResultsToFile())
                 ,new AllScenarios(
                     new BaseDays(
-                        eventdb ? new SourceFromEvents() : new SourceFromFile()
+                        eventdb ? new SourceFromEvents(client!) : new SourceFromFile()
                     )
                 )
             );
@@ -164,13 +178,13 @@ namespace CObs
                 "CObs build: committing results..."
             );
 
-            builder.WriteResults();
+            await builder.CommitResultsAsync();
 
             Console.WriteLine(
                 "CObs build: committing aggregates..."
             );
 
-            builder.WriteAggregates();
+            await builder.CommitAggregatesAsync();
 
             Console.WriteLine("CObs build: Done.");
 
