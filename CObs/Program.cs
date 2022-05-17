@@ -16,8 +16,6 @@ namespace CObs
 {
     class Program
     {
-
-
         static void ReportValidationError(SourceValidationStatus pStatus)
         {
             if (!pStatus.SourceOK)
@@ -76,49 +74,79 @@ namespace CObs
             bool eventdb   = args.ToList().Any( arg => arg == "eventdb");
             bool series    = args.ToList().Any( arg => arg == "series");
 
+            const string streamName = "outbreak";
+
             EventStoreClient? client = null;
 
             if (eventdb)
             {
+                string connectionString = Environment.GetEnvironmentVariable(
+                    "DB_CONNECTION_STRING"
+                ) ?? "esdb://localhost:2113?tls=false";
+
                 client = new EventStoreClient(
-                    EventStoreClientSettings.Create(
-                        "esdb://localhost:2113?tls=false"
-                    )
+                    EventStoreClientSettings.Create(connectionString)
                 );
             }
-
+            
             var builder = new Builder(
-                 (eventdb ? new ResultsToEvents(client!) : new ResultsToFile())
+                 (eventdb ? new ResultsToEvents(client!, streamName) : new ResultsToFile())
                 ,new AllScenarios(
                     new BaseDays(
-                        eventdb ? new SourceFromEvents(client!) : new SourceFromFile()
+                        eventdb
+                            ? new SourceFromEvents(client!, streamName)
+                            : new SourceFromFile()
                     )
                 )
             );
 
             Console.WriteLine(
+                "CObs build: registering build..."
+            );
+
+            ICommitActionResult registerStatus = await builder.RegisterBuild();
+
+            if (!registerStatus.Success)
+            {
+                Console.WriteLine(
+                    "CObs build: access exception registering Build: "
+                  + registerStatus.Message
+                );
+
+                if (client != null) { client.Dispose(); }
+
+                if (keyToExit)
+                {
+                    Console.WriteLine("\nPress any key to exit.");
+                    Console.ReadKey();
+                }
+
+                Environment.Exit(1);
+            }
+
+            Console.WriteLine(
                 "CObs build: reading daily source data..."
             );
 
-            IReadActionResult status = await builder.ReadDaysRawAsync();
+            var readStatus = await builder.ReadDaysRawAsync();
 
             if (
-                (!status.Success)
+                (!readStatus.Success)
             ||  (builder.BaseDays.DaysRaw.Count
                     <= builder.Scenarios.MedianTimeToMortalityValues.Max())
             ) {
-                if (!status.Success)
+                if (!readStatus.Success)
                 {
-                    if (status.Status.RowNumber == 0)
+                    if (readStatus.Status.RowNumber == 0)
                     {
                         Console.WriteLine(
                             "CObs build: access exception reading Source Data: "
-                          + status.Message
+                          + readStatus.Message
                         );
                     }
                     else
                     {
-                        ReportValidationError(status.Status);
+                        ReportValidationError(readStatus.Status);
                     }
                 }
                 else
@@ -133,7 +161,9 @@ namespace CObs
                       + (builder.Scenarios.MedianTimeToMortalityValues.Max() + 1).ToString()
                       + "."
                     );
-                }            
+                }
+
+                if (client != null) { client.Dispose(); }
 
                 if (keyToExit)
                 {
@@ -144,11 +174,15 @@ namespace CObs
                 Environment.Exit(1);
             }
 
+            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+
             Console.WriteLine(
                 "CObs build: populating rolling averages..."
             );
 
             builder.PopulateRolling();
+
+            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 
             Console.WriteLine(
                 "CObs build: generating scenarios..."
@@ -156,11 +190,15 @@ namespace CObs
 
             builder.GenerateScenarios();
 
+            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+
             Console.WriteLine(
                 "CObs build: running scenarios..."
             );
 
             builder.RunScenarios();
+
+            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 
             Console.WriteLine(
                 "CObs build: extracting result days..."
@@ -168,25 +206,35 @@ namespace CObs
 
             builder.ExtractResultDays();
 
+            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+
             Console.WriteLine(
                 "CObs build: extracting global aggregates..."
             );
 
             builder.ExtractAggregates();
 
+            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+
             Console.WriteLine(
                 "CObs build: committing results..."
             );
 
-            await builder.CommitResultsAsync();
+            var commitStatus = await builder.CommitResultsAsync();
 
-            Console.WriteLine(
-                "CObs build: committing aggregates..."
-            );
+            if (!commitStatus.Success)
+            {
+                Console.WriteLine(
+                    "CObs build: exception committing Results Data: "
+                  + readStatus.Message
+                );
+            }
+            else
+            {
+                Console.WriteLine("CObs build: Done.");
+            }
 
-            await builder.CommitAggregatesAsync();
-
-            Console.WriteLine("CObs build: Done.");
+            if (client != null) { client.Dispose(); }
 
             if (keyToExit)
             {

@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "CObs": {
+      "commandName": "Project",
+      "commandLineArgs": "nokey eventdb"
+    }
+  }
+}

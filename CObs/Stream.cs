@@ -11,10 +11,11 @@ namespace CObs
 {
     public interface IReadActionResult
     {
-        bool                   Success { get; }
-        string                 Message { get; }
-        SourceValidationStatus Status  { get; }
-        List<DayRaw>           DaysRaw { get; }
+        bool                   Success      { get; }
+        string                 Message      { get; }
+        SourceValidationStatus Status       { get; }
+        List<DayRaw>           DaysRaw      { get; }
+        ulong                  ReadPosition { get; }
     }
 
     public interface IReadEventsAsync
@@ -30,29 +31,37 @@ namespace CObs
 
     public interface ICommitEventsAsync
     {
-        Task<ICommitActionResult> CommitResultsAsync(List<ResultsDay> pResultsDays);
-        Task<ICommitActionResult> CommitAggregatesAsync(Aggregates pAggregates);
+        Task<bool>                IsBuildDequeued();
+        Task<ICommitActionResult> RegisterBuild();
+        Task<ICommitActionResult> CommitResultsAsync(
+             List<ResultsDay> pResultsDays
+            ,Aggregates       pAggregates
+            ,ulong            pReadPosition
+        );
     }
 
     class ReadActionResult : IReadActionResult
     {
-        public bool                   Success { get; private set; }
-        public string                 Message { get; private set; }
-        public SourceValidationStatus Status  { get; private set; }
-        public List<DayRaw>           DaysRaw { get; private set; }
+        public bool                   Success      { get; private set; }
+        public string                 Message      { get; private set; }
+        public SourceValidationStatus Status       { get; private set; }
+        public List<DayRaw>           DaysRaw      { get; private set; }
+        public ulong                  ReadPosition { get; private set; }
 
         public ReadActionResult(
              bool                   pSuccess
             ,string                 pMessage
             ,SourceValidationStatus pStatus
             ,List<DayRaw>           pDaysRaw
+            ,ulong                  pReadPosition
         ) {
-            Success = pSuccess;
-            Message = pSuccess ? ""       : pMessage;
-            Status  = pSuccess
+            Success      = pSuccess;
+            Message      = pSuccess ? ""       : pMessage;
+            Status       = pSuccess
                 ? new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
                 : pStatus;
-            DaysRaw = pSuccess ? pDaysRaw : new List<DayRaw>();
+            DaysRaw      = pSuccess ? pDaysRaw : new List<DayRaw>();
+            ReadPosition = pSuccess ? pReadPosition : 0;
         }
     }
 
@@ -108,6 +117,7 @@ namespace CObs
                                 ,status
                             )
                             ,new List<DayRaw>()
+                            ,0
                         );
                     }
 
@@ -132,6 +142,7 @@ namespace CObs
                         ,SourceRowValidationStatus.ExceptionReadingEvents
                     )
                     ,new List<DayRaw>()
+                    ,0
                 );
             }
 
@@ -141,14 +152,28 @@ namespace CObs
                 ,""
                 ,new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
                 ,daysRaw
+                ,0
             );
         }
     }
 
     public class ResultsToFile : ICommitEventsAsync
     {
-        public async Task<ICommitActionResult> CommitResultsAsync(List<ResultsDay> pResultsDays)
+        public Task<bool> IsBuildDequeued()
         {
+            return Task.FromResult(false);
+        }
+
+        public Task<ICommitActionResult> RegisterBuild()
+        {
+            return Task.FromResult(
+                new CommitActionResult(true, "") as ICommitActionResult
+            );
+        }
+
+        private static async Task<ICommitActionResult> CommitResultsDaysAsync(
+            List<ResultsDay> pResultsDays
+        ) {
             try
             {
                 using (var w = new StreamWriter("ResultsData.txt"))
@@ -238,8 +263,9 @@ namespace CObs
             return new CommitActionResult(true, "");
         }
 
-        public async Task<ICommitActionResult> CommitAggregatesAsync(Aggregates pAggregates)
-        {
+        private static async Task<ICommitActionResult> CommitAggregatesAsync(
+            Aggregates pAggregates
+        ) {
             try
             {
                 using (var w = new StreamWriter("Aggregates.txt"))
@@ -289,13 +315,29 @@ namespace CObs
 
             return new CommitActionResult(true, "");
         }
+
+        public async Task<ICommitActionResult> CommitResultsAsync(
+             List<ResultsDay> pResultsDays
+            ,Aggregates       pAggregates
+            ,ulong            pReadPosition
+        ) {
+            var result = await CommitResultsDaysAsync(pResultsDays);
+
+            if (!result.Success) { return result; }
+
+            return await CommitAggregatesAsync(pAggregates);
+        }
     }
 
     public class SourceFromEvents : IReadEventsAsync
     {
-        public EventStoreClient Client { get; private set; }
+        public EventStoreClient Client     { get; private set; }
+        public string           StreamName { get; private set; }
 
-        public SourceFromEvents(EventStoreClient pClient) { Client = pClient; }
+        public SourceFromEvents(
+             EventStoreClient pClient
+            ,string           pStreamName
+        ) { Client = pClient; StreamName = pStreamName; }
 
         public async Task<IReadActionResult> ReadDaysRawAsync()
         {
@@ -308,9 +350,14 @@ namespace CObs
             {
                 var result = Client.ReadStreamAsync(
                      Direction.Forwards
-                    , "outbreak"
-                    , StreamPosition.Start
+                    ,StreamName + "-source"
+                    ,StreamPosition.Start
                 );
+
+                if (await result.ReadState != ReadState.Ok)
+                {
+                    throw new Exception("source stream empty");
+                }
 
                 events = await result.ToListAsync();
             }
@@ -326,6 +373,7 @@ namespace CObs
                         ,SourceRowValidationStatus.ExceptionReadingEvents
                     )
                     ,new List<DayRaw>()
+                    ,0
                 );
             }
 
@@ -351,6 +399,7 @@ namespace CObs
                             ,SourceRowValidationStatus.ExceptionReadingEvents
                         )
                         ,new List<DayRaw>()
+                        ,0
                     );
                 }
 
@@ -371,6 +420,7 @@ namespace CObs
                             ,status
                         )
                         ,new List<DayRaw>()
+                        ,0
                     );
                 }
 
@@ -389,18 +439,92 @@ namespace CObs
                 ,""
                 ,new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
                 ,daysRaw
+                ,events.Last().OriginalEventNumber.ToUInt64()
             );
         }
     }
 
     public class ResultsToEvents : ICommitEventsAsync
     {
-        public EventStoreClient Client { get; private set; }
-
-        public ResultsToEvents(EventStoreClient pClient) { Client = pClient; }
-
-        public async Task<ICommitActionResult> CommitResultsAsync(List<ResultsDay> pResultsDays)
+        class BuildEvent
         {
+            public DateTime Timestamp { get; private set; }
+
+            public BuildEvent() { Timestamp = DateTime.Now; }
+        }
+
+        class ResultsReady
+        {
+            public ulong ReadPosition { get; private set; }
+
+            public ResultsReady(ulong pReadPosition) { ReadPosition = pReadPosition; }
+        }
+
+        public EventStoreClient Client        { get; private set; }
+        public string           StreamName    { get; private set; }
+        public StreamRevision   BuildPosition { get; private set; }
+
+        public ResultsToEvents(EventStoreClient pClient, string pStreamName) {
+            Client        = pClient;
+            StreamName    = pStreamName;
+            BuildPosition = new StreamRevision();
+        }
+
+        public async Task<bool> IsBuildDequeued()
+        {
+            var result = Client.ReadStreamAsync(
+                 Direction.Backwards
+                ,StreamName + "-results"
+                ,StreamPosition.End
+                ,1
+            );
+
+            if (await result.ReadState == ReadState.StreamNotFound) { return true; }
+
+            var head = await result.FirstOrDefaultAsync();
+
+            if (head.OriginalEventNumber.ToUInt64() != BuildPosition.ToUInt64())
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        public async Task<ICommitActionResult> RegisterBuild()
+        {
+            try
+            {
+                var result = await Client.AppendToStreamAsync(
+                     StreamName + "-results"
+                    ,StreamState.Any
+                    ,new List<EventData> { new EventData(
+                         Uuid.NewUuid()
+                        ,"build-event"
+                        ,JsonSerializer.SerializeToUtf8Bytes(
+                            new BuildEvent()
+                        )
+                    ) }
+                );
+
+                BuildPosition = result.NextExpectedStreamRevision;
+            }
+            catch (Exception e)
+            {
+                return new CommitActionResult(
+                     false
+                    ,"exception registering build: " + e.Message
+                );
+            }
+
+            return new CommitActionResult(true, "");
+        }
+
+        public async Task<ICommitActionResult> CommitResultsAsync(
+             List<ResultsDay> pResultsDays
+            ,Aggregates       pAggregates
+            ,ulong            pReadPosition
+        ) {
             var results = pResultsDays.Select(day => {
                 return new EventData(
                      Uuid.NewUuid()
@@ -409,11 +533,29 @@ namespace CObs
                 );
             }).ToList();
 
+            results.Add(
+                new EventData(
+                     Uuid.NewUuid()
+                    ,"aggregates-received"
+                    ,JsonSerializer.SerializeToUtf8Bytes(pAggregates)
+                )
+            );
+
+            results.Add(
+                new EventData(
+                     Uuid.NewUuid()
+                    ,"results-ready"
+                    ,JsonSerializer.SerializeToUtf8Bytes(
+                        new ResultsReady(pReadPosition)
+                    )
+                )
+            );
+
             try
             {
                 await Client.AppendToStreamAsync(
-                    "results"
-                    ,StreamState.Any
+                     StreamName + "-results"
+                    ,BuildPosition
                     ,results
                 );
             }
@@ -422,33 +564,6 @@ namespace CObs
                 return new CommitActionResult(
                      false
                     ,"exception writing results to store: " + e.Message
-                );
-            }
-
-            return new CommitActionResult(true, "");
-        }
-
-        public async Task<ICommitActionResult> CommitAggregatesAsync(Aggregates pAggregates)
-        {
-            var aggregates = new EventData(
-                 Uuid.NewUuid()
-                ,"aggregates-received"
-                ,JsonSerializer.SerializeToUtf8Bytes(pAggregates)
-            );
-
-            try
-            {
-                await Client.AppendToStreamAsync(
-                    "aggregates"
-                    ,StreamState.Any
-                    ,new List<EventData> { aggregates }
-                );
-            }
-            catch (Exception e)
-            {
-                return new CommitActionResult(
-                     false
-                    ,"exception writing aggregates to store: " + e.Message
                 );
             }
 

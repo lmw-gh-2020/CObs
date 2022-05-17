@@ -98,6 +98,7 @@ namespace CObs
 
         private List<ResultsDay>  ResultsDays   { get; set; }
         private Aggregates        Aggregates    { get; set; }
+        private ulong             ReadPosition  { get; set; }
 
         public Builder(
              ICommitEventsAsync pCommitAdapter
@@ -109,11 +110,21 @@ namespace CObs
 
             ResultsDays   = new List<ResultsDay>();
             Aggregates    = new Aggregates();
+            ReadPosition = 0;
+        }
+
+        public async Task<ICommitActionResult> RegisterBuild()
+        {
+            return await CommitAdapter.RegisterBuild();
         }
 
         public async Task<IReadActionResult> ReadDaysRawAsync()
         {
-            return await BaseDays.ReadDaysRawAsync();
+            var readResult = await BaseDays.ReadDaysRawAsync();
+
+            if (readResult.Success) { ReadPosition = readResult.ReadPosition; }
+
+            return readResult;
         }
 
         public void PopulateRolling()
@@ -481,12 +492,9 @@ namespace CObs
 
         public async Task<ICommitActionResult> CommitResultsAsync()
         {
-            return await CommitAdapter.CommitResultsAsync(ResultsDays);
-        }
-
-        public async Task<ICommitActionResult> CommitAggregatesAsync()
-        {
-            return await CommitAdapter.CommitAggregatesAsync(Aggregates);
+            return await CommitAdapter.CommitResultsAsync(
+                 ResultsDays ,Aggregates ,ReadPosition
+            );
         }
     }
 }

@@ -287,6 +287,7 @@ namespace CObs
                         ,SourceRowValidationStatus.ExceptionReadingEvents
                     )
                     ,new List<DayRaw>()
+                    ,0
                 );
             }
 
