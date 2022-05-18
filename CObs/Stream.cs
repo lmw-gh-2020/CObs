@@ -612,30 +612,60 @@ namespace CObs
 
         class ResultsDayBySeries
         {
-            public DateTime   TimeSeriesDay   { get; set; }
-            public int        TimeSeriesIndex { get; set; }
-            public ResultsDay ResultsDay      { get; private set; }
+            public string[] t { get; set; }
 
             public ResultsDayBySeries(
                  BuildJob   pBuildJob
                 ,ResultsDay pResultsDay
             ) {
-                TimeSeriesDay   = pBuildJob.TimeSeriesDay;
-                TimeSeriesIndex = pBuildJob.TimeSeriesIndex;
-                ResultsDay      = pResultsDay;
+                t = new string[] {
+                     pBuildJob.TimeSeriesIndex.ToString()
+                    ,pBuildJob.TimeSeriesDay.ToString("yyyy-MM-dd")
+                    ,pResultsDay.TimelineIndex.ToString()
+                    ,pResultsDay.Date.ToString("yyyy-MM-dd")
+                    ,pResultsDay.Mortality.ToString()
+                    ,pResultsDay.Hospitalizations.ToString()
+                    ,pResultsDay.Tests.ToString()
+                    ,pResultsDay.Positivity.ToString()
+                    ,pResultsDay.Rolling5DayMortality.ToString()
+                    ,pResultsDay.Rolling5DayHospitalizations.ToString()
+                    ,pResultsDay.Rolling5DayTests.ToString()
+                    ,pResultsDay.Rolling5DayPositivity.ToString()
+                    ,((int)pResultsDay.LowerBoundSourcedOn).ToString()
+                    ,((int)pResultsDay.BaselineSourcedOn).ToString()
+                    ,((int)pResultsDay.UpperBoundSourcedOn).ToString()
+                    ,pResultsDay.AdmissionsWithChurnLowerBound.ToString()
+                    ,pResultsDay.AdmissionsWithChurnBaseline.ToString()
+                    ,pResultsDay.AdmissionsWithChurnUpperBound.ToString()
+                    ,pResultsDay.ActualDNCLowerBound.ToString()
+                    ,pResultsDay.ActualDNCBaseline.ToString()
+                    ,pResultsDay.ActualDNCUpperBound.ToString()
+                    ,pResultsDay.Rolling9DayDeltaCDeltaTLowerBound.ToString()
+                    ,pResultsDay.Rolling9DayDeltaCDeltaTBaseline.ToString()
+                    ,pResultsDay.Rolling9DayDeltaCDeltaTUpperBound.ToString()
+                    ,pResultsDay.GrowthRateLowerBound.ToString()
+                    ,pResultsDay.GrowthRateBaseline.ToString()
+                    ,pResultsDay.GrowthRateUpperBound.ToString()
+                    ,pResultsDay.REffLowerBound.ToString()
+                    ,pResultsDay.REffBaseline.ToString()
+                    ,pResultsDay.REffUpperBound.ToString()
+                    ,pResultsDay.DoublingTimeLowerBound.ToString()
+                    ,pResultsDay.DoublingTimeBaseline.ToString()
+                    ,pResultsDay.DoublingTimeUpperBound.ToString()
+                };
             }
         }
 
         class AggregatesBySeries
         {
-            public DateTime   TimeSeriesDay   { get; private set; }
             public int        TimeSeriesIndex { get; private set; }
+            public DateTime   TimeSeriesDay   { get; private set; }
             public Aggregates Aggregates      { get; private set; }
 
             public AggregatesBySeries(BuildJob pBuildJob)
             {
-                TimeSeriesDay   = pBuildJob.TimeSeriesDay;
                 TimeSeriesIndex = pBuildJob.TimeSeriesIndex;
+                TimeSeriesDay   = pBuildJob.TimeSeriesDay;
                 Aggregates      = pBuildJob.Aggregates;
             }
         }

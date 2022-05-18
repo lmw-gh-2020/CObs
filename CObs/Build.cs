@@ -100,8 +100,8 @@ namespace CObs
         public List<ResultsDay>   ResultsDays     { get; private set; }
         public Aggregates         Aggregates      { get; private set; }
 
-        public DateTime           TimeSeriesDay   { get; set; }
         public int                TimeSeriesIndex { get; set; }
+        public DateTime           TimeSeriesDay   { get; set; }
 
         public BuildJob(
              IReadEventsAsync   pReadAdapter
@@ -115,8 +115,8 @@ namespace CObs
             ResultsDays     = new List<ResultsDay>();
             Aggregates      = new Aggregates();
 
-            TimeSeriesDay   = BaseDays.DaysRaw.Last().Date;
             TimeSeriesIndex = BaseDays.DaysRaw.Last().TimelineIndex;
+            TimeSeriesDay   = BaseDays.DaysRaw.Last().Date;
         }
 
         public void PopulateRolling()
