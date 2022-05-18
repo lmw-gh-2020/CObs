@@ -487,14 +487,17 @@ namespace CObs
 
     public class Builder
     {
-        public  ICommitEventsAsync CommitAdapter { get; private set; }
-        public  BaseDays           BaseDays      { get; private set; }
-        public  DateTime           BuildFrom     { get; private set; }
-        public  bool               WithSeries    { get; private set; }
-        public  List<BuildJob>     BuildQueue    { get; private set; }
+        public  ICommitEventsAsync CommitAdapter  { get; private set; }
+        public  BaseDays           BaseDays       { get; private set; }
+        public  DateTime           BuildFrom      { get; private set; }
+        public  bool               WithSeries     { get; private set; }
+        public  List<BuildJob>     BuildQueue     { get; private set; }
 
-        private ulong              ReadPosition  { get; set; }
-        private Uuid               Checkpoint    { get; set; }
+        private ulong              ReadPosition   { get; set; }
+        private Uuid               CheckpointID   { get; set; }
+        private int                MinSeriesIndex { get; set; }
+        private int                BuildFromIndex { get; set; }
+        private int                MaxSeriesIndex { get; set; }
 
         public Builder(
              ICommitEventsAsync pCommitAdapter
@@ -508,7 +511,7 @@ namespace CObs
             BuildFrom     = DateTime.Today;
             BuildQueue    = new List<BuildJob>();
             ReadPosition  = 0;
-            Checkpoint    = Uuid.Empty;
+            CheckpointID  = Uuid.Empty;
         }
 
         public async Task<ICommitActionResult> RegisterBuild()
@@ -522,9 +525,9 @@ namespace CObs
 
             if (!readResult.Success) { return readResult; }
 
-            ReadPosition  = readResult.ReadPosition;
-            Checkpoint    = readResult.LastSeenCheckpoint;
             BuildFrom     = readResult.BuildFrom;
+            ReadPosition  = readResult.ReadPosition;
+            CheckpointID  = readResult.LastSeenCheckpoint;
 
             var scenarios = new AllScenarios();
             var lastDay   = BaseDays.DaysRaw.Last().Date;
@@ -537,15 +540,19 @@ namespace CObs
             ) {
                 if (WithSeries)
                 {
-                    int maxIndex       = BaseDays.DaysRaw.Last().TimelineIndex;
-                    int buildFromIndex = BaseDays.DaysRaw
+                    MinSeriesIndex = BaseDays.DaysRaw.First().TimelineIndex;
+                    BuildFromIndex = BaseDays.DaysRaw
                         .Where(day => day.Date == BuildFrom)
                         .First()
                         .TimelineIndex;
+                    MaxSeriesIndex = BaseDays.DaysRaw.Last().TimelineIndex;
 
-                    if (buildFromIndex > maxIndex) { buildFromIndex = maxIndex; }
+                    if (BuildFromIndex > MaxSeriesIndex) { BuildFromIndex = MaxSeriesIndex; }
+                    if (MinSeriesIndex > MaxSeriesIndex) { MinSeriesIndex = MaxSeriesIndex; }
 
-                    while (buildFromIndex <= maxIndex)
+                    int buildFromIndex = BuildFromIndex;
+
+                    while (buildFromIndex <= MaxSeriesIndex)
                     {
                         List<DayRaw> daysRaw = BaseDays.DaysRaw
                             .Where(day => day.TimelineIndex <= buildFromIndex)
@@ -579,7 +586,12 @@ namespace CObs
         public async Task<ICommitActionResult> CommitResultsAsync()
         {
             return await CommitAdapter.CommitResultsAsync(
-                 BuildQueue ,ReadPosition ,Checkpoint
+                 BuildQueue
+                ,ReadPosition
+                ,CheckpointID
+                ,MinSeriesIndex
+                ,BuildFromIndex
+                ,MaxSeriesIndex
             );
         }
     }

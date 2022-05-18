@@ -38,6 +38,9 @@ namespace CObs
              List<BuildJob> pBuildQueue
             ,ulong          pReadPosition
             ,Uuid           pCheckpoint
+            ,int            pMinSeriesIndex
+            ,int            pBuildFromIndex
+            ,int            pMaxSeriesIndex
         );
     }
 
@@ -85,10 +88,10 @@ namespace CObs
 
     public class CheckpointClear
     {
-        public string Checkpoint { get; private set; }
+        public string CheckpointID { get; private set; }
 
-        public CheckpointClear(Uuid pCheckpoint) {
-            Checkpoint = pCheckpoint.ToString();
+        public CheckpointClear(Uuid pCheckpointID) {
+            CheckpointID = pCheckpointID.ToString();
         }
     }
 
@@ -346,6 +349,9 @@ namespace CObs
              List<BuildJob> pBuildQueue
             ,ulong          pReadPosition
             ,Uuid           pCheckpoint
+            ,int            pMinSeriesIndex
+            ,int            pBuildFromIndex
+            ,int            pMaxSeriesIndex
         ) {
             var result = await CommitResultsDaysAsync(pBuildQueue[0].ResultsDays);
 
@@ -401,6 +407,7 @@ namespace CObs
 
         public async Task<IReadActionResult> ReadDaysRawAsync(BaseDays pBaseDays)
         {
+            ulong                pos            = 0;
             DateTime             today          = DateTime.Today;
             var                  batches        = new List<SourceBatch>();
             var                  daysRaw        = new List<DayRaw>();
@@ -453,6 +460,8 @@ namespace CObs
 
             foreach (var sourceEvent in events)
             {
+                pos = sourceEvent.OriginalEventNumber.ToUInt64();
+
                 if (sourceEvent.OriginalEvent.EventType == "checkpoint")
                 {
                     lastCheckpoint = sourceEvent.OriginalEvent.EventId;
@@ -479,7 +488,7 @@ namespace CObs
                             Encoding.UTF8.GetString(sourceEvent.Event.Data.ToArray())!
                         )!;
 
-                        cleared = clear.Checkpoint!;
+                        cleared = clear.CheckpointID!;
                     }
                     catch (Exception e)
                     {
@@ -589,12 +598,12 @@ namespace CObs
                 }
             }
 
-            /* return souce events */
+            /* return souce events aggregates */
             return new ReadActionResult(
                  true
                 ,""
                 ,new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
-                ,events.Last().OriginalEventNumber.ToUInt64()
+                ,pos
                 ,lastCheckpoint
                 ,buildFrom
             );
@@ -612,7 +621,11 @@ namespace CObs
 
         class ResultsDayBySeries
         {
+            #pragma warning disable IDE1006
+
             public string[] t { get; set; }
+
+            #pragma warning restore IDE1006
 
             public ResultsDayBySeries(
                  BuildJob   pBuildJob
@@ -672,13 +685,36 @@ namespace CObs
 
         class ResultsReady
         {
-            public ulong ReadPosition { get; private set; }
+            public string BuildEventID   { get; private set; }
+            public ulong  BuildPosition  { get; private set; }
+            public string CheckpointID   { get; private set; }
+            public ulong  ReadPosition   { get; private set; }
+            public int    MinSeriesIndex { get; private set; }
+            public int    BuildFromIndex { get; private set; }
+            public int    MaxSeriesIndex { get; private set; }
 
-            public ResultsReady(ulong pReadPosition) { ReadPosition = pReadPosition; }
+            public ResultsReady(
+                 Uuid  pBuildEventID
+                ,ulong pBuildPosition
+                ,Uuid  pCheckpointID
+                ,ulong pReadPosition
+                ,int   pMinSeriesIndex
+                ,int   pBuildFromIndex
+                ,int   pMaxSeriesIndex
+            ) {
+                BuildEventID   = pBuildEventID.ToString();
+                BuildPosition  = pBuildPosition;
+                CheckpointID   = pCheckpointID.ToString();
+                ReadPosition   = pReadPosition;
+                MinSeriesIndex = pMinSeriesIndex;
+                BuildFromIndex = pBuildFromIndex;
+                MaxSeriesIndex = pMaxSeriesIndex;
+            }
         }
 
         public EventStoreClient Client        { get; private set; }
         public string           StreamName    { get; private set; }
+        public Uuid             BuildEventID  { get; private set; }
         public StreamRevision   BuildPosition { get; private set; }
 
         public ResultsToEvents(EventStoreClient pClient, string pStreamName) {
@@ -712,11 +748,13 @@ namespace CObs
         {
             try
             {
+                BuildEventID = Uuid.NewUuid();
+
                 var result = await Client.AppendToStreamAsync(
                      StreamName + "-results"
                     ,StreamState.Any
                     ,new List<EventData> { new EventData(
-                         Uuid.NewUuid()
+                         BuildEventID
                         ,"build-event"
                         ,JsonSerializer.SerializeToUtf8Bytes(
                             new BuildEvent()
@@ -740,8 +778,19 @@ namespace CObs
         public async Task<ICommitActionResult> CommitResultsAsync(
              List<BuildJob> pBuildQueue
             ,ulong          pReadPosition
-            ,Uuid           pCheckpoint
+            ,Uuid           pCheckpointID
+            ,int            pMinSeriesIndex
+            ,int            pBuildFromIndex
+            ,int            pMaxSeriesIndex
         ) {
+            if (pBuildQueue.Count == 0)
+            {
+                return new CommitActionResult(
+                     false
+                    ,"build queue was empty"
+                );
+            }
+
             var results = new List<EventData>();
 
             foreach (var job in pBuildQueue)
@@ -772,7 +821,15 @@ namespace CObs
                      Uuid.NewUuid()
                     ,"results-ready"
                     ,JsonSerializer.SerializeToUtf8Bytes(
-                        new ResultsReady(pReadPosition)
+                        new ResultsReady(
+                             BuildEventID
+                            ,BuildPosition
+                            ,pCheckpointID
+                            ,pReadPosition
+                            ,pMinSeriesIndex
+                            ,pBuildFromIndex
+                            ,pMaxSeriesIndex
+                        )
                     )
                 )
             );
@@ -789,7 +846,7 @@ namespace CObs
             {
                 return new CommitActionResult(
                      false
-                    ,"exception writing results to store: " + e.Message
+                    ,"exception appending results to stream: " + e.Message
                 );
             }
 
@@ -803,7 +860,7 @@ namespace CObs
                              Uuid.NewUuid()
                             ,"checkpoint-clear"
                             ,JsonSerializer.SerializeToUtf8Bytes(
-                                new CheckpointClear(pCheckpoint)
+                                new CheckpointClear(pCheckpointID)
                             )
                         )
                     }

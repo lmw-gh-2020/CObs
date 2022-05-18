@@ -21,6 +21,6 @@
 
     public class CheckpointClearRoot
     {
-        public string? Checkpoint { get; set; }
+        public string? CheckpointID { get; set; }
     }
 }
