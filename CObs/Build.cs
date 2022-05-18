@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
+using EventStore.Client;
 
 /*
 *
@@ -90,41 +91,32 @@ namespace CObs
         public int     ProjectedTotalMortalityUpperBound { get; set; }
     }
 
-    public class Builder
+    public class BuildJob
     {
-        public ICommitEventsAsync CommitAdapter { get; private set; }
-        public BaseDays           BaseDays      { get; private set; }
-        public AllScenarios       Scenarios     { get; private set; }
+        public ICommitEventsAsync CommitAdapter   { get; private set; }
+        public BaseDays           BaseDays        { get; private set; }
+        public AllScenarios       Scenarios       { get; private set; }
 
-        private List<ResultsDay>  ResultsDays   { get; set; }
-        private Aggregates        Aggregates    { get; set; }
-        private ulong             ReadPosition  { get; set; }
+        public List<ResultsDay>   ResultsDays     { get; private set; }
+        public Aggregates         Aggregates      { get; private set; }
 
-        public Builder(
-             ICommitEventsAsync pCommitAdapter
-            ,AllScenarios       pScenarios
+        public DateTime           TimeSeriesDay   { get; set; }
+        public int                TimeSeriesIndex { get; set; }
+
+        public BuildJob(
+             IReadEventsAsync   pReadAdapter
+            ,ICommitEventsAsync pCommitAdapter
+            ,List<DayRaw>       pDaysRaw
         ) {
-            CommitAdapter = pCommitAdapter;
-            BaseDays      = pScenarios.BaseDays;
-            Scenarios     = pScenarios;
+            CommitAdapter   = pCommitAdapter;
+            BaseDays        = new BaseDays(pReadAdapter, pDaysRaw);
+            Scenarios       = new AllScenarios();
 
-            ResultsDays   = new List<ResultsDay>();
-            Aggregates    = new Aggregates();
-            ReadPosition = 0;
-        }
+            ResultsDays     = new List<ResultsDay>();
+            Aggregates      = new Aggregates();
 
-        public async Task<ICommitActionResult> RegisterBuild()
-        {
-            return await CommitAdapter.RegisterBuild();
-        }
-
-        public async Task<IReadActionResult> ReadDaysRawAsync()
-        {
-            var readResult = await BaseDays.ReadDaysRawAsync();
-
-            if (readResult.Success) { ReadPosition = readResult.ReadPosition; }
-
-            return readResult;
+            TimeSeriesDay   = BaseDays.DaysRaw.Last().Date;
+            TimeSeriesIndex = BaseDays.DaysRaw.Last().TimelineIndex;
         }
 
         public void PopulateRolling()
@@ -134,13 +126,15 @@ namespace CObs
 
         public void GenerateScenarios()
         {
-            Scenarios.GenerateScenarioParameters();
+            Scenarios.GenerateScenarioParameters(BaseDays);
         }
 
-        public void RunScenarios()
+        public async Task RunScenarios()
         {
             foreach (var scenario in Scenarios.Scenarios)
             {
+                if (await CommitAdapter.IsBuildDequeued()) { return; }
+
                 scenario.RunScenario();
             }
         }
@@ -489,11 +483,103 @@ namespace CObs
                 Aggregates.CurrentDoublingTimeUnstable = true;
             }
         }
+    }
+
+    public class Builder
+    {
+        public  ICommitEventsAsync CommitAdapter { get; private set; }
+        public  BaseDays           BaseDays      { get; private set; }
+        public  DateTime           BuildFrom     { get; private set; }
+        public  bool               WithSeries    { get; private set; }
+        public  List<BuildJob>     BuildQueue    { get; private set; }
+
+        private ulong              ReadPosition  { get; set; }
+        private Uuid               Checkpoint    { get; set; }
+
+        public Builder(
+             ICommitEventsAsync pCommitAdapter
+            ,BaseDays           pBaseDays
+            ,bool               pWithSeries
+        ) {
+            CommitAdapter = pCommitAdapter;
+            BaseDays      = pBaseDays;
+            WithSeries    = pWithSeries;
+
+            BuildFrom     = DateTime.Today;
+            BuildQueue    = new List<BuildJob>();
+            ReadPosition  = 0;
+            Checkpoint    = Uuid.Empty;
+        }
+
+        public async Task<ICommitActionResult> RegisterBuild()
+        {
+            return await CommitAdapter.RegisterBuild();
+        }
+
+        public async Task<IReadActionResult> ReadDaysRawAsync()
+        {
+            var readResult = await BaseDays.ReadDaysRawAsync();
+
+            if (!readResult.Success) { return readResult; }
+
+            ReadPosition  = readResult.ReadPosition;
+            Checkpoint    = readResult.LastSeenCheckpoint;
+            BuildFrom     = readResult.BuildFrom;
+
+            var scenarios = new AllScenarios();
+            var lastDay   = BaseDays.DaysRaw.Last().Date;
+
+            if (BuildFrom > lastDay) { BuildFrom = lastDay; }
+
+            if (
+                BaseDays.DaysRaw.Count
+                    > scenarios.MedianTimeToMortalityValues.Max()
+            ) {
+                if (WithSeries)
+                {
+                    int maxIndex       = BaseDays.DaysRaw.Last().TimelineIndex;
+                    int buildFromIndex = BaseDays.DaysRaw
+                        .Where(day => day.Date == BuildFrom)
+                        .First()
+                        .TimelineIndex;
+
+                    if (buildFromIndex > maxIndex) { buildFromIndex = maxIndex; }
+
+                    while (buildFromIndex <= maxIndex)
+                    {
+                        List<DayRaw> daysRaw = BaseDays.DaysRaw
+                            .Where(day => day.TimelineIndex <= buildFromIndex)
+                            .ToList();
+
+                        if (daysRaw.Count > scenarios.MedianTimeToMortalityValues.Max())
+                        {
+                            BuildQueue.Add(new BuildJob(
+                                 BaseDays.ReadAdapter
+                                ,CommitAdapter
+                                ,daysRaw
+                            ));
+                        }
+                    
+                        buildFromIndex++;
+                    }
+                }
+                else
+                {
+                    BuildQueue.Add(new BuildJob(
+                         BaseDays.ReadAdapter
+                        ,CommitAdapter
+                        ,BaseDays.DaysRaw
+                    ));
+                }
+            }
+
+            return readResult;
+        }
 
         public async Task<ICommitActionResult> CommitResultsAsync()
         {
             return await CommitAdapter.CommitResultsAsync(
-                 ResultsDays ,Aggregates ,ReadPosition
+                 BuildQueue ,ReadPosition ,Checkpoint
             );
         }
     }

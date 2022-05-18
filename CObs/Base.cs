@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
+using EventStore.Client;
 
 /*
 *
@@ -20,7 +21,6 @@ namespace CObs
         ,ExceptionReadingEvents
         ,WrongNumberOfColumns
         ,DateUnreadable
-        ,DateNotContiguous
         ,DNCUnreadable
         ,DNCNegative
         ,TestsUnreadable
@@ -52,13 +52,28 @@ namespace CObs
 
     public class DayRaw
     {
-        public int      TimelineIndex    { get; private set; }
+        public int      TimelineIndex    { get; set; }
         public DateTime Date             { get; private set; }
         public int      DNC              { get; private set; }
         public int      Tests            { get; private set; }
         public double   Positivity       { get; private set; }
         public int      Mortality        { get; private set; }
         public int      Hospitalizations { get; private set; }
+
+        public static bool Compare(DayRaw a, DayRaw b)
+        {
+            /*
+                Equal date implies equal eventual timeline index, (but timeline
+                index may be lazy-initialised).
+            */
+            return
+                a.Date             == b.Date
+            &&  a.DNC              == b.DNC
+            &&  a.Tests            == b.Tests
+            &&  a.Positivity       == b.Positivity
+            &&  a.Mortality        == b.Mortality
+            &&  a.Hospitalizations == b.Hospitalizations;
+        }
 
         public DayRaw(int pIndex, List<string> pRaw)
         {
@@ -140,38 +155,40 @@ namespace CObs
 
     public class BaseDays
     {
-        public IReadEventsAsync ReadAdapter { get; private set; }
-        public List<DayRaw>     DaysRaw     { get; private set; }
-        public List<DayRolling> DaysRolling { get; private set; }
+        public IReadEventsAsync             ReadAdapter   { get; private set; }
+        public Dictionary<DateTime, DayRaw> DaysRawByDate { get; private set; }
+        public List<DayRaw>                 DaysRaw       { get; private set; }
+        public List<DayRolling>             DaysRolling   { get; private set; }
 
         public BaseDays(IReadEventsAsync pReadAdapter)
         {
             ReadAdapter = pReadAdapter;
 
-            DaysRaw     = new List<DayRaw>();
-            DaysRolling = new List<DayRolling>();
+            DaysRawByDate = new Dictionary<DateTime, DayRaw>();
+            DaysRaw       = new List<DayRaw>();
+            DaysRolling   = new List<DayRolling>();
         }
 
-        public static SourceRowValidationStatus ValidateSourceRow(
-             List<string> pRow
-            ,DateTime?    pLastDate
-        ) {
+        public BaseDays(IReadEventsAsync pReadAdapter, List<DayRaw> pDaysRaw)
+        {
+            ReadAdapter   = pReadAdapter;
+            DaysRaw       = pDaysRaw;
+
+            DaysRawByDate = new Dictionary<DateTime, DayRaw>();
+            DaysRolling   = new List<DayRolling>();
+        }
+
+        private static SourceRowValidationStatus ValidateSourceRow(List<string> pRow)
+        {
             /* validate a row of source data */
             if (pRow.Count != 6)
             {
                 return SourceRowValidationStatus.WrongNumberOfColumns;
             }
 
-            if (!DateTime.TryParse(pRow[0], out DateTime date))
+            if (!DateTime.TryParse(pRow[0], out DateTime _))
             {
                 return SourceRowValidationStatus.DateUnreadable;
-            }
-
-            if (
-                (pLastDate != null)
-            &&  (date.Date != pLastDate.Value.Date.AddDays(1))
-            ) {
-                return SourceRowValidationStatus.DateNotContiguous;
             }
 
             if (!int.TryParse(pRow[1], out int dnc))
@@ -227,21 +244,12 @@ namespace CObs
             return SourceRowValidationStatus.OK;
         }
 
-        public static SourceRowValidationStatus ValidateSourceEvent(
-             SourceDay pDay
-            ,DateTime? pLastDate
-        ) {
+        public static SourceRowValidationStatus ValidateSourceEvent(SourceDay pDay)
+        {
             /* validate a source data event */
-            if (!DateTime.TryParse(pDay.Date, out DateTime date))
+            if (!DateTime.TryParse(pDay.Date, out DateTime _))
             {
                 return SourceRowValidationStatus.DateUnreadable;
-            }
-
-            if (
-                (pLastDate != null)
-            &&  (date.Date != pLastDate.Value.Date.AddDays(1))
-            ) {
-                return SourceRowValidationStatus.DateNotContiguous;
             }
 
             if (pDay.DNC < 0)
@@ -272,9 +280,68 @@ namespace CObs
             return SourceRowValidationStatus.OK;
         }
 
+        public void AddDaysByDate(List<DayRaw> pDaysRaw)
+        {
+            foreach (var day in pDaysRaw) { DaysRawByDate.Add(day.Date, day); }
+        }
+
+        public SourceRowValidationStatus AddDay(List<string> pDay)
+        {
+            var status = ValidateSourceRow(pDay);
+
+            if (status == SourceRowValidationStatus.OK)
+            {
+                var day = new DayRaw(0, pDay);
+
+                DaysRawByDate.Add(day.Date, day);
+            }
+
+            return status;
+        }
+
+        public bool ValidateTimelineContiguityAndSeedIndex()
+        {
+            bool         contiguous = true;
+            List<DayRaw> daysRaw    = DaysRawByDate
+                .OrderBy(day => day.Key)
+                .Select( day => day.Value)
+                .ToList();
+
+            if (daysRaw.Count > 1)
+            {
+                bool     first = true;
+                DateTime date  = daysRaw[0].Date;
+
+                foreach (var day in daysRaw)
+                {
+                    if (first) { first = false; continue; }
+
+                    if (day.Date != date.AddDays(1)) { contiguous = false; break; }
+
+                    date = date.AddDays(1);
+                }
+            }
+
+            if (contiguous)
+            {
+                int index = 0;
+
+                foreach (var day in daysRaw)
+                {
+                    day.TimelineIndex = index;
+
+                    index++;
+                }
+
+                DaysRaw = daysRaw;
+            }
+
+            return contiguous;
+        }
+
         public async Task<IReadActionResult> ReadDaysRawAsync()
         {
-            var readResult = await ReadAdapter.ReadDaysRawAsync();
+            var readResult = await ReadAdapter.ReadDaysRawAsync(this);
 
             if (readResult == null)
             {
@@ -286,12 +353,11 @@ namespace CObs
                         ,0
                         ,SourceRowValidationStatus.ExceptionReadingEvents
                     )
-                    ,new List<DayRaw>()
                     ,0
+                    ,Uuid.Empty
+                    ,DateTime.Today
                 );
             }
-
-            DaysRaw = readResult.DaysRaw;
 
             return readResult;
         }

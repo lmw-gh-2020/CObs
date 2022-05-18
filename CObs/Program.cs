@@ -35,8 +35,6 @@ namespace CObs
                         => "had wrong number of columns"
                     ,SourceRowValidationStatus.DateUnreadable
                         => "had unreadable date"
-                    ,SourceRowValidationStatus.DateNotContiguous
-                        => "date was not contiguous with previous row"
                     ,SourceRowValidationStatus.DNCUnreadable
                         => "had unreadable DNC"
                     ,SourceRowValidationStatus.DNCNegative
@@ -74,6 +72,8 @@ namespace CObs
             bool eventdb   = args.ToList().Any( arg => arg == "eventdb");
             bool series    = args.ToList().Any( arg => arg == "series");
 
+            if (!eventdb) { series = false; }
+
             const string streamName = "outbreak";
 
             EventStoreClient? client = null;
@@ -91,13 +91,12 @@ namespace CObs
             
             var builder = new Builder(
                  (eventdb ? new ResultsToEvents(client!, streamName) : new ResultsToFile())
-                ,new AllScenarios(
-                    new BaseDays(
-                        eventdb
-                            ? new SourceFromEvents(client!, streamName)
-                            : new SourceFromFile()
-                    )
+                ,new BaseDays(
+                    eventdb
+                        ? new SourceFromEvents(client!, streamName)
+                        : new SourceFromFile()
                 )
+                ,series
             );
 
             Console.WriteLine(
@@ -128,19 +127,20 @@ namespace CObs
                 "CObs build: reading daily source data..."
             );
 
+            var scenarios  = new AllScenarios();
             var readStatus = await builder.ReadDaysRawAsync();
 
             if (
                 (!readStatus.Success)
             ||  (builder.BaseDays.DaysRaw.Count
-                    <= builder.Scenarios.MedianTimeToMortalityValues.Max())
+                    <= scenarios.MedianTimeToMortalityValues.Max())
             ) {
                 if (!readStatus.Success)
                 {
                     if (readStatus.Status.RowNumber == 0)
                     {
                         Console.WriteLine(
-                            "CObs build: access exception reading Source Data: "
+                            "CObs build: error reading Source Data: "
                           + readStatus.Message
                         );
                     }
@@ -158,7 +158,7 @@ namespace CObs
 
                     Console.WriteLine(
                         "CObs build: minimum number of rows is therefore currently: "
-                      + (builder.Scenarios.MedianTimeToMortalityValues.Max() + 1).ToString()
+                      + (scenarios.MedianTimeToMortalityValues.Max() + 1).ToString()
                       + "."
                     );
                 }
@@ -174,45 +174,58 @@ namespace CObs
                 Environment.Exit(1);
             }
 
-            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+            int jobNumber = 1;
 
-            Console.WriteLine(
-                "CObs build: populating rolling averages..."
-            );
+            foreach (var job in builder.BuildQueue)
+            {
+                var nOfm = "Cobs build ("
+                    + jobNumber
+                    + "/"
+                    + builder.BuildQueue.Count
+                    + "): ";
 
-            builder.PopulateRolling();
+                if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 
-            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+                Console.WriteLine(
+                    nOfm + "populating rolling averages..."
+                );
 
-            Console.WriteLine(
-                "CObs build: generating scenarios..."
-            );
+                job.PopulateRolling();
 
-            builder.GenerateScenarios();
+                if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 
-            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+                Console.WriteLine(
+                    nOfm + "generating scenarios..."
+                );
 
-            Console.WriteLine(
-                "CObs build: running scenarios..."
-            );
+                job.GenerateScenarios();
 
-            builder.RunScenarios();
+                if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 
-            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+                Console.WriteLine(
+                    nOfm + "running scenarios..."
+                );
 
-            Console.WriteLine(
-                "CObs build: extracting result days..."
-            );
+                await job.RunScenarios();
 
-            builder.ExtractResultDays();
+                if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 
-            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+                Console.WriteLine(
+                    nOfm + "extracting result days..."
+                );
 
-            Console.WriteLine(
-                "CObs build: extracting global aggregates..."
-            );
+                job.ExtractResultDays();
 
-            builder.ExtractAggregates();
+                if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
+
+                Console.WriteLine(
+                    nOfm + "extracting global aggregates..."
+                );
+
+                job.ExtractAggregates();
+
+                jobNumber++;
+            }
 
             if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 

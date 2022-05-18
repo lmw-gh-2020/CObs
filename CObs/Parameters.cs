@@ -46,8 +46,6 @@ namespace CObs
         /* civic population size for dataset (to 2 significant figures) */
         public const int      Population = 10000000;
 
-        public BaseDays       BaseDays                            { get; private set; }
-
         public double[]       IFRValues                           { get; private set; }
         public int[]          MedianTimeFromExposureToTestValues  { get; private set; }
         public int[]          MedianTimeToAdmissionValues         { get; private set; }
@@ -58,10 +56,8 @@ namespace CObs
 
         public List<Scenario> Scenarios                           { get; private set; }
 
-        public AllScenarios(BaseDays pBaseDays)
+        public AllScenarios()
         {
-            BaseDays                            = pBaseDays;
-
             /* parameter ranges pulled from a manual (non-systematic) review of the literature */
             IFRValues                           = new double[] { 0.006 ,0.008 ,0.01 };
             MedianTimeFromExposureToTestValues  = new int[]    { 4     ,5     ,7    };
@@ -74,7 +70,7 @@ namespace CObs
             Scenarios                           = new List<Scenario>();
         }
 
-        public void GenerateScenarioParameters()
+        public void GenerateScenarioParameters(BaseDays pBaseDays)
         {
             var allParameterSets =
                 from IFR                           in IFRValues
@@ -108,7 +104,7 @@ namespace CObs
                 ) {
                     Scenarios.Add(
                         new Scenario(
-                             BaseDays
+                             pBaseDays
                             ,new ScenarioParameters(
                                  parameters.IFR
                                 ,parameters.MedianTimeFromExposureToTest

@@ -11,16 +11,17 @@ namespace CObs
 {
     public interface IReadActionResult
     {
-        bool                   Success      { get; }
-        string                 Message      { get; }
-        SourceValidationStatus Status       { get; }
-        List<DayRaw>           DaysRaw      { get; }
-        ulong                  ReadPosition { get; }
+        bool                   Success            { get; }
+        string                 Message            { get; }
+        SourceValidationStatus Status             { get; }
+        ulong                  ReadPosition       { get; }
+        Uuid                   LastSeenCheckpoint { get; }
+        DateTime               BuildFrom          { get; }
     }
 
     public interface IReadEventsAsync
     {
-        Task<IReadActionResult> ReadDaysRawAsync();
+        Task<IReadActionResult> ReadDaysRawAsync(BaseDays pBaseDays);
     }
 
     public interface ICommitActionResult
@@ -34,34 +35,37 @@ namespace CObs
         Task<bool>                IsBuildDequeued();
         Task<ICommitActionResult> RegisterBuild();
         Task<ICommitActionResult> CommitResultsAsync(
-             List<ResultsDay> pResultsDays
-            ,Aggregates       pAggregates
-            ,ulong            pReadPosition
+             List<BuildJob> pBuildQueue
+            ,ulong          pReadPosition
+            ,Uuid           pCheckpoint
         );
     }
 
     class ReadActionResult : IReadActionResult
     {
-        public bool                   Success      { get; private set; }
-        public string                 Message      { get; private set; }
-        public SourceValidationStatus Status       { get; private set; }
-        public List<DayRaw>           DaysRaw      { get; private set; }
-        public ulong                  ReadPosition { get; private set; }
+        public bool                   Success            { get; private set; }
+        public string                 Message            { get; private set; }
+        public SourceValidationStatus Status             { get; private set; }
+        public ulong                  ReadPosition       { get; private set; }
+        public Uuid                   LastSeenCheckpoint { get; private set; }
+        public DateTime               BuildFrom          { get; private set; }
 
         public ReadActionResult(
              bool                   pSuccess
             ,string                 pMessage
             ,SourceValidationStatus pStatus
-            ,List<DayRaw>           pDaysRaw
             ,ulong                  pReadPosition
+            ,Uuid                   pLastSeenCheckpoint
+            ,DateTime               pBuildFrom
         ) {
-            Success      = pSuccess;
-            Message      = pSuccess ? ""       : pMessage;
-            Status       = pSuccess
+            Success            = pSuccess;
+            Status             = pSuccess
                 ? new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
                 : pStatus;
-            DaysRaw      = pSuccess ? pDaysRaw : new List<DayRaw>();
-            ReadPosition = pSuccess ? pReadPosition : 0;
+            Message            = pSuccess ? ""                  : pMessage;
+            ReadPosition       = pSuccess ? pReadPosition       : 0;
+            LastSeenCheckpoint = pSuccess ? pLastSeenCheckpoint : Uuid.Empty;
+            BuildFrom          = pSuccess ? pBuildFrom          : DateTime.Today;
         }
     }
 
@@ -79,13 +83,22 @@ namespace CObs
         }
     }
 
+    public class CheckpointClear
+    {
+        public string Checkpoint { get; private set; }
+
+        public CheckpointClear(Uuid pCheckpoint) {
+            Checkpoint = pCheckpoint.ToString();
+        }
+    }
+
     public class SourceFromFile : IReadEventsAsync
     {
-        public async Task<IReadActionResult> ReadDaysRawAsync()
+        public async Task<IReadActionResult> ReadDaysRawAsync(BaseDays pBaseDays)
         {
-            int       index    = 0;
-            DateTime? lastDate = null;
-            var       daysRaw  = new List<DayRaw>();
+            DateTime today      = DateTime.Today;
+            bool     contiguous = true;
+            int      index      = 0;
 
             try
             {
@@ -100,10 +113,7 @@ namespace CObs
                         entry => entry.Trim()
                     ).ToList();
 
-                    SourceRowValidationStatus status = BaseDays.ValidateSourceRow(
-                         row
-                        ,lastDate
-                    );
+                    SourceRowValidationStatus status = pBaseDays.AddDay(row);
 
                     if (status != SourceRowValidationStatus.OK)
                     {
@@ -116,19 +126,33 @@ namespace CObs
                                 ,(index + 1) /* line number hints start from 1 */
                                 ,status
                             )
-                            ,new List<DayRaw>()
                             ,0
+                            ,Uuid.Empty
+                            ,today
                         );
                     }
 
-                    var day = new DayRaw(index, row);
-
-                    daysRaw.Add(day);
-
-                    lastDate = day.Date;
-
                     index++;
-                }                
+                }
+
+                contiguous = pBaseDays.ValidateTimelineContiguityAndSeedIndex();
+
+                if (!contiguous)
+                {
+                    /* report contiguity error */
+                    return new ReadActionResult(
+                         false
+                        ,"timeline not contiguous"
+                        ,new SourceValidationStatus(
+                             true
+                            ,0
+                            ,SourceRowValidationStatus.OK
+                        )
+                        ,0
+                        ,Uuid.Empty
+                        ,today
+                    );
+                }
             }
             catch (Exception e)
             {
@@ -141,8 +165,9 @@ namespace CObs
                         ,0
                         ,SourceRowValidationStatus.ExceptionReadingEvents
                     )
-                    ,new List<DayRaw>()
                     ,0
+                    ,Uuid.Empty
+                    ,today
                 );
             }
 
@@ -151,8 +176,9 @@ namespace CObs
                  true
                 ,""
                 ,new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
-                ,daysRaw
                 ,0
+                ,Uuid.Empty
+                ,today
             );
         }
     }
@@ -317,20 +343,36 @@ namespace CObs
         }
 
         public async Task<ICommitActionResult> CommitResultsAsync(
-             List<ResultsDay> pResultsDays
-            ,Aggregates       pAggregates
-            ,ulong            pReadPosition
+             List<BuildJob> pBuildQueue
+            ,ulong          pReadPosition
+            ,Uuid           pCheckpoint
         ) {
-            var result = await CommitResultsDaysAsync(pResultsDays);
+            var result = await CommitResultsDaysAsync(pBuildQueue[0].ResultsDays);
 
             if (!result.Success) { return result; }
 
-            return await CommitAggregatesAsync(pAggregates);
+            return await CommitAggregatesAsync(pBuildQueue[0].Aggregates);
         }
     }
 
     public class SourceFromEvents : IReadEventsAsync
     {
+        class SourceBatch
+        {
+            public int          Index      { get; private set; }
+            public string       Checkpoint { get; private set; }
+            public List<DayRaw> DaysRaw    { get; private set; }
+            public bool         Handled    { get; set; }
+
+            public SourceBatch(int pIndex, string pCheckpoint, List<DayRaw> pDaysRaw)
+            {
+                Index      = pIndex;
+                Checkpoint = pCheckpoint;
+                DaysRaw    = pDaysRaw;
+                Handled    = false;
+            }
+        }
+
         public EventStoreClient Client     { get; private set; }
         public string           StreamName { get; private set; }
 
@@ -339,12 +381,37 @@ namespace CObs
             ,string           pStreamName
         ) { Client = pClient; StreamName = pStreamName; }
 
-        public async Task<IReadActionResult> ReadDaysRawAsync()
+        public static IReadActionResult ReportTypeException(
+             int    pLineNumber
+            ,string pMessage
+        ) {
+            return new ReadActionResult(
+                 false
+                ,pMessage
+                ,new SourceValidationStatus(
+                     false
+                    ,pLineNumber
+                    ,SourceRowValidationStatus.ExceptionReadingEvents
+                )
+                ,0
+                ,Uuid.Empty
+                ,DateTime.Today
+            );
+        }
+
+        public async Task<IReadActionResult> ReadDaysRawAsync(BaseDays pBaseDays)
         {
-            var daysRaw                   = new List<DayRaw>();
-            int                  index    = 0;
-            DateTime?            lastDate = null;
+            DateTime             today          = DateTime.Today;
+            var                  batches        = new List<SourceBatch>();
+            var                  daysRaw        = new List<DayRaw>();
+            var                  daysHandled    = new Dictionary<DateTime, DayRaw>();
+            string               cleared        = "";
+            Uuid                 lastCheckpoint = Uuid.Empty;
+            int                  batchIndex     = 0;
+            int                  index          = 0;
+            bool                 contiguous;
             List<ResolvedEvent>? events;
+            DateTime             buildFrom;
 
             try
             {
@@ -372,45 +439,76 @@ namespace CObs
                         ,0
                         ,SourceRowValidationStatus.ExceptionReadingEvents
                     )
-                    ,new List<DayRaw>()
                     ,0
+                    ,Uuid.Empty
+                    ,today
                 );
             }
 
-            foreach (var sourceDay in events)
+            if (events.Count == 0)
             {
+                /* report type exception (no source) */
+                return ReportTypeException(0, "no source data in stream");
+            }
+
+            foreach (var sourceEvent in events)
+            {
+                if (sourceEvent.OriginalEvent.EventType == "checkpoint")
+                {
+                    lastCheckpoint = sourceEvent.OriginalEvent.EventId;
+
+                    /* if no final checkpoint mark is present we ignore dirty reads */
+                    batches.Add(new SourceBatch(
+                         batchIndex
+                        ,sourceEvent.OriginalEvent.EventId.ToString()
+                        ,daysRaw
+                    ));
+
+                    daysRaw = new List<DayRaw>();
+
+                    batchIndex++;
+                }
+
+                if (sourceEvent.OriginalEvent.EventType == "checkpoint-clear")
+                {
+                    try
+                    {
+                        CheckpointClearRoot clear = JsonSerializer.Deserialize<
+                            CheckpointClearRoot
+                        >(
+                            Encoding.UTF8.GetString(sourceEvent.Event.Data.ToArray())!
+                        )!;
+
+                        cleared = clear.Checkpoint!;
+                    }
+                    catch (Exception e)
+                    {
+                        /* report type exception (bad checkpoint-clear) */
+                        return ReportTypeException(0, e.Message);
+                    }
+                }
+
+                if (sourceEvent.OriginalEvent.EventType != "source-day-received") { continue; }
+
                 SourceDayRoot? day;
 
                 try
                 {
                     day = JsonSerializer.Deserialize<SourceDayRoot>(
-                        Encoding.UTF8.GetString(sourceDay.Event.Data.ToArray())!
+                        Encoding.UTF8.GetString(sourceEvent.Event.Data.ToArray())!
                     )!;
                 }
                 catch (Exception e)
                 {
-                    /* report type exception */
-                    return new ReadActionResult(
-                         false
-                        ,e.Message
-                        ,new SourceValidationStatus(
-                             false
-                            ,(index + 1) /* line number hints start from 1 */
-                            ,SourceRowValidationStatus.ExceptionReadingEvents
-                        )
-                        ,new List<DayRaw>()
-                        ,0
-                    );
+                    /* report type exception (line number hints start from 1) */
+                    return ReportTypeException(index + 1, e.Message);
                 }
 
-                SourceRowValidationStatus status = BaseDays.ValidateSourceEvent(
-                     day.sourceDay!
-                    ,lastDate
-                );
+                SourceRowValidationStatus status = BaseDays.ValidateSourceEvent(day.sourceDay!);
 
                 if (status != SourceRowValidationStatus.OK)
                 {
-                    /* report validation error */
+                    /* report row validation error */
                     return new ReadActionResult(
                          false
                         ,"row validation error"
@@ -419,18 +517,76 @@ namespace CObs
                             ,(index + 1) /* line number hints start from 1 */
                             ,status
                         )
-                        ,new List<DayRaw>()
                         ,0
+                        ,Uuid.Empty
+                        ,today
                     );
                 }
 
-                var dayRaw = new DayRaw(index, day.sourceDay!);
-
-                daysRaw.Add(dayRaw);
-
-                lastDate = dayRaw.Date;
+                daysRaw.Add(new DayRaw(0, day.sourceDay!));
 
                 index++;
+            }
+
+            foreach (var batch in batches) { pBaseDays.AddDaysByDate(batch.DaysRaw); }
+
+            contiguous = pBaseDays.ValidateTimelineContiguityAndSeedIndex();
+
+            if (!contiguous)
+            {
+                /* report contiguity error */
+                return new ReadActionResult(
+                     false
+                    ,"timeline not contiguous"
+                    ,new SourceValidationStatus(
+                         true
+                        ,0
+                        ,SourceRowValidationStatus.OK
+                    )
+                    ,0
+                    ,Uuid.Empty
+                    ,today
+                );
+            }
+
+            foreach (var batch in batches)
+            {
+                if (batch.Checkpoint == cleared)
+                {
+                    foreach (var handled in batches)
+                    {
+                        if (handled.Index <= batch.Index) { handled.Handled = true; }
+                        else                              { break; }
+                    }
+                }
+            }
+
+            foreach (var batch in batches)
+            {
+                if (!batch.Handled) { break; }
+
+                foreach (var day in batch.DaysRaw) { daysHandled.Add(day.Date, day); }
+            }
+
+            buildFrom = pBaseDays.DaysRaw[0].Date;
+
+            if (daysHandled.Count > 0)
+            {
+                buildFrom = (daysHandled.OrderBy(day => day.Key).Last().Key).AddDays(1);
+
+                foreach (var batch in batches)
+                {
+                    if (batch.Handled) { continue; }
+
+                    foreach (var day in batch.DaysRaw)
+                    {
+                        if (
+                            (daysHandled.ContainsKey(day.Date))
+                        &&  (!DayRaw.Compare(day, daysHandled[day.Date]))
+                        &&  (day.Date < buildFrom)
+                        ) { buildFrom = day.Date; }
+                    }
+                }
             }
 
             /* return souce events */
@@ -438,8 +594,9 @@ namespace CObs
                  true
                 ,""
                 ,new SourceValidationStatus(true, 0, SourceRowValidationStatus.OK)
-                ,daysRaw
                 ,events.Last().OriginalEventNumber.ToUInt64()
+                ,lastCheckpoint
+                ,buildFrom
             );
         }
     }
@@ -451,6 +608,36 @@ namespace CObs
             public DateTime Timestamp { get; private set; }
 
             public BuildEvent() { Timestamp = DateTime.Now; }
+        }
+
+        class ResultsDayBySeries
+        {
+            public DateTime   TimeSeriesDay   { get; set; }
+            public int        TimeSeriesIndex { get; set; }
+            public ResultsDay ResultsDay      { get; private set; }
+
+            public ResultsDayBySeries(
+                 BuildJob   pBuildJob
+                ,ResultsDay pResultsDay
+            ) {
+                TimeSeriesDay   = pBuildJob.TimeSeriesDay;
+                TimeSeriesIndex = pBuildJob.TimeSeriesIndex;
+                ResultsDay      = pResultsDay;
+            }
+        }
+
+        class AggregatesBySeries
+        {
+            public DateTime   TimeSeriesDay   { get; private set; }
+            public int        TimeSeriesIndex { get; private set; }
+            public Aggregates Aggregates      { get; private set; }
+
+            public AggregatesBySeries(BuildJob pBuildJob)
+            {
+                TimeSeriesDay   = pBuildJob.TimeSeriesDay;
+                TimeSeriesIndex = pBuildJob.TimeSeriesIndex;
+                Aggregates      = pBuildJob.Aggregates;
+            }
         }
 
         class ResultsReady
@@ -521,25 +708,34 @@ namespace CObs
         }
 
         public async Task<ICommitActionResult> CommitResultsAsync(
-             List<ResultsDay> pResultsDays
-            ,Aggregates       pAggregates
-            ,ulong            pReadPosition
+             List<BuildJob> pBuildQueue
+            ,ulong          pReadPosition
+            ,Uuid           pCheckpoint
         ) {
-            var results = pResultsDays.Select(day => {
-                return new EventData(
-                     Uuid.NewUuid()
-                    ,"results-day-received"
-                    ,JsonSerializer.SerializeToUtf8Bytes(day)
-                );
-            }).ToList();
+            var results = new List<EventData>();
 
-            results.Add(
-                new EventData(
-                     Uuid.NewUuid()
-                    ,"aggregates-received"
-                    ,JsonSerializer.SerializeToUtf8Bytes(pAggregates)
-                )
-            );
+            foreach (var job in pBuildQueue)
+            {
+                results.AddRange(job.ResultsDays.Select(day => {
+                    return new EventData(
+                         Uuid.NewUuid()
+                        ,"results-day-received"
+                        ,JsonSerializer.SerializeToUtf8Bytes(
+                            new ResultsDayBySeries(job, day)
+                        )
+                    );
+                }).ToList());
+
+                results.Add(
+                    new EventData(
+                         Uuid.NewUuid()
+                        ,"aggregates-received"
+                        ,JsonSerializer.SerializeToUtf8Bytes(
+                            new AggregatesBySeries(job)
+                        )
+                    )
+                );
+            }
 
             results.Add(
                 new EventData(
@@ -564,6 +760,30 @@ namespace CObs
                 return new CommitActionResult(
                      false
                     ,"exception writing results to store: " + e.Message
+                );
+            }
+
+            try
+            {
+                await Client.AppendToStreamAsync(
+                     StreamName + "-source"
+                    ,StreamState.Any
+                    ,new List<EventData> {
+                        new EventData(
+                             Uuid.NewUuid()
+                            ,"checkpoint-clear"
+                            ,JsonSerializer.SerializeToUtf8Bytes(
+                                new CheckpointClear(pCheckpoint)
+                            )
+                        )
+                    }
+                );
+            }
+            catch (Exception e)
+            {
+                return new CommitActionResult(
+                     false
+                    ,"exception marking checkpoint clear: " + e.Message
                 );
             }
 
