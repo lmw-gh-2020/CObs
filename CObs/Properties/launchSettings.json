@@ -2,7 +2,7 @@
   "profiles": {
     "CObs": {
       "commandName": "Project",
-      "commandLineArgs": "nokey eventdb stream"
+      "commandLineArgs": "nokey eventdb series"
     }
   }
 }
