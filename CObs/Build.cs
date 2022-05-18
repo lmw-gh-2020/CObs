@@ -529,14 +529,13 @@ namespace CObs
             ReadPosition  = readResult.ReadPosition;
             CheckpointID  = readResult.LastSeenCheckpoint;
 
-            var scenarios = new AllScenarios();
-            var lastDay   = BaseDays.DaysRaw.Last().Date;
+            var medianTimeToMortalityMax = (new AllScenarios()).MedianTimeToMortalityValues.Max();
+            var lastDay                  = BaseDays.DaysRaw.Last().Date;
 
             if (BuildFrom > lastDay) { BuildFrom = lastDay; }
 
             if (
-                BaseDays.DaysRaw.Count
-                    > scenarios.MedianTimeToMortalityValues.Max()
+                BaseDays.DaysRaw.Count > medianTimeToMortalityMax
             ) {
                 if (WithSeries)
                 {
@@ -547,18 +546,28 @@ namespace CObs
                         .TimelineIndex;
                     MaxSeriesIndex = BaseDays.DaysRaw.Last().TimelineIndex;
 
-                    if (BuildFromIndex > MaxSeriesIndex) { BuildFromIndex = MaxSeriesIndex; }
                     if (MinSeriesIndex > MaxSeriesIndex) { MinSeriesIndex = MaxSeriesIndex; }
+                    if (BuildFromIndex > MaxSeriesIndex) { BuildFromIndex = MaxSeriesIndex; }
 
-                    int buildFromIndex = BuildFromIndex;
+                    if (MinSeriesIndex < medianTimeToMortalityMax)
+                    {
+                        MinSeriesIndex = medianTimeToMortalityMax;
+                    }
 
-                    while (buildFromIndex <= MaxSeriesIndex)
+                    if (BuildFromIndex < medianTimeToMortalityMax)
+                    {
+                        BuildFromIndex = medianTimeToMortalityMax;
+                    }
+
+                    int buildToIndex = BuildFromIndex;
+
+                    while (buildToIndex <= MaxSeriesIndex)
                     {
                         List<DayRaw> daysRaw = BaseDays.DaysRaw
-                            .Where(day => day.TimelineIndex <= buildFromIndex)
+                            .Where(day => (day.TimelineIndex <= buildToIndex))
                             .ToList();
 
-                        if (daysRaw.Count > scenarios.MedianTimeToMortalityValues.Max())
+                        if (daysRaw.Count > medianTimeToMortalityMax)
                         {
                             BuildQueue.Add(new BuildJob(
                                  BaseDays.ReadAdapter
@@ -567,7 +576,7 @@ namespace CObs
                             ));
                         }
                     
-                        buildFromIndex++;
+                        buildToIndex++;
                     }
                 }
                 else

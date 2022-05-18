@@ -282,7 +282,16 @@ namespace CObs
 
         public void AddDaysByDate(List<DayRaw> pDaysRaw)
         {
-            foreach (var day in pDaysRaw) { DaysRawByDate.Add(day.Date, day); }
+            foreach (var day in pDaysRaw) {
+                if (DaysRawByDate.ContainsKey(day.Date))
+                {
+                    DaysRawByDate[day.Date] = day;
+                }
+                else
+                {
+                    DaysRawByDate.Add(day.Date, day);
+                }
+            }
         }
 
         public SourceRowValidationStatus AddDay(List<string> pDay)
@@ -293,7 +302,14 @@ namespace CObs
             {
                 var day = new DayRaw(0, pDay);
 
-                DaysRawByDate.Add(day.Date, day);
+                if (DaysRawByDate.ContainsKey(day.Date))
+                {
+                    DaysRawByDate[day.Date] = day;
+                }
+                else
+                {
+                    DaysRawByDate.Add(day.Date, day);
+                }
             }
 
             return status;

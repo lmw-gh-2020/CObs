@@ -574,7 +574,17 @@ namespace CObs
             {
                 if (!batch.Handled) { break; }
 
-                foreach (var day in batch.DaysRaw) { daysHandled.Add(day.Date, day); }
+                foreach (var day in batch.DaysRaw)
+                {
+                    if (daysHandled.ContainsKey(day.Date))
+                    {
+                        daysHandled[day.Date] = day;
+                    }
+                    else
+                    {
+                        daysHandled.Add(day.Date, day);
+                    }
+                }
             }
 
             buildFrom = pBaseDays.DaysRaw[0].Date;
