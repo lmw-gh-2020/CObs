@@ -530,9 +530,13 @@ namespace CObs
             CheckpointID  = readResult.LastSeenCheckpoint;
 
             var medianTimeToMortalityMax = (new AllScenarios()).MedianTimeToMortalityValues.Max();
-            var lastDay                  = BaseDays.DaysRaw.Last().Date;
+            var nextBuildDay              = BaseDays.DaysRaw.Last().Date.AddDays(1);
 
-            if (BuildFrom > lastDay) { BuildFrom = lastDay; }
+            if (BuildFrom >= BaseDays.DaysRaw.Last().Date.AddDays(1))
+            {
+                /* no jobs to queue (time series up-to-date) */
+                return readResult;
+            }
 
             if (
                 BaseDays.DaysRaw.Count > medianTimeToMortalityMax

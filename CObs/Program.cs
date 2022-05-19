@@ -63,6 +63,19 @@ namespace CObs
             }
         }
 
+        static void ExitCObs(EventStoreClient? pClient, bool pKeyToExit, bool pSuccess)
+        {
+            if (pClient != null) { pClient.Dispose(); }
+
+            if (pKeyToExit)
+            {
+                Console.WriteLine("\nPress any key to exit.");
+                Console.ReadKey();
+            }
+
+            Environment.Exit(pSuccess ? 0 : 1);
+        }
+
         static async Task Main(string[] args)
         {
             /*
@@ -112,15 +125,7 @@ namespace CObs
                   + registerStatus.Message
                 );
 
-                if (client != null) { client.Dispose(); }
-
-                if (keyToExit)
-                {
-                    Console.WriteLine("\nPress any key to exit.");
-                    Console.ReadKey();
-                }
-
-                Environment.Exit(1);
+                ExitCObs(client, keyToExit, false);
             }
 
             Console.WriteLine(
@@ -163,15 +168,14 @@ namespace CObs
                     );
                 }
 
-                if (client != null) { client.Dispose(); }
+                ExitCObs(client, keyToExit, false);
+            }
 
-                if (keyToExit)
-                {
-                    Console.WriteLine("\nPress any key to exit.");
-                    Console.ReadKey();
-                }
+            if (builder.BuildQueue.Count == 0)
+            {
+                Console.WriteLine("CObs build: job queue is empty (series up-to-date).");
 
-                Environment.Exit(1);
+                ExitCObs(client, keyToExit, true);
             }
 
             int jobNumber = 1;
@@ -247,15 +251,7 @@ namespace CObs
                 Console.WriteLine("CObs build: Done.");
             }
 
-            if (client != null) { client.Dispose(); }
-
-            if (keyToExit)
-            {
-                Console.WriteLine("\nPress any key to exit.");
-                Console.ReadKey();
-            }
-
-            Environment.Exit(0);
+            ExitCObs(client, keyToExit, commitStatus.Success);
         }
     }
 }
