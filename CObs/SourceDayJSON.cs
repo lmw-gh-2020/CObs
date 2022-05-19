@@ -23,4 +23,10 @@
     {
         public string? CheckpointID { get; set; }
     }
+
+    public class CheckpointProgressRoot
+    {
+        public string? CheckpointID           { get; set; }
+        public int     TimeSeriesHandledIndex { get; set; }
+    }
 }

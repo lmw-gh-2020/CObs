@@ -737,27 +737,6 @@ namespace CObs
             BuildPosition = new StreamRevision();
         }
 
-        public async Task<bool> IsBuildDequeued()
-        {
-            var result = Client.ReadStreamAsync(
-                 Direction.Backwards
-                ,StreamName + "-results"
-                ,StreamPosition.End
-                ,1
-            );
-
-            if (await result.ReadState == ReadState.StreamNotFound) { return true; }
-
-            var head = await result.FirstOrDefaultAsync();
-
-            if (head.OriginalEventNumber.ToUInt64() != BuildPosition.ToUInt64())
-            {
-                return true;
-            }
-
-            return false;
-        }
-
         public async Task<ICommitActionResult> RegisterBuild()
         {
             try
@@ -787,6 +766,27 @@ namespace CObs
             }
 
             return new CommitActionResult(true, "");
+        }
+
+        public async Task<bool> IsBuildDequeued()
+        {
+            var result = Client.ReadStreamAsync(
+                 Direction.Backwards
+                ,StreamName + "-results"
+                ,StreamPosition.End
+                ,1
+            );
+
+            if (await result.ReadState == ReadState.StreamNotFound) { return true; }
+
+            var head = await result.FirstOrDefaultAsync();
+
+            if (head.OriginalEventNumber.ToUInt64() != BuildPosition.ToUInt64())
+            {
+                return true;
+            }
+
+            return false;
         }
 
         public async Task<ICommitActionResult> CommitResultsAsync(

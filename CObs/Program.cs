@@ -113,22 +113,6 @@ namespace CObs
             );
 
             Console.WriteLine(
-                "CObs build: registering build..."
-            );
-
-            ICommitActionResult registerStatus = await builder.RegisterBuild();
-
-            if (!registerStatus.Success)
-            {
-                Console.WriteLine(
-                    "CObs build: access exception registering Build: "
-                  + registerStatus.Message
-                );
-
-                ExitCObs(client, keyToExit, false);
-            }
-
-            Console.WriteLine(
                 "CObs build: reading daily source data..."
             );
 
@@ -178,11 +162,27 @@ namespace CObs
                 ExitCObs(client, keyToExit, true);
             }
 
+            Console.WriteLine(
+                "CObs build: registering build..."
+            );
+
+            ICommitActionResult registerStatus = await builder.RegisterBuild();
+
+            if (!registerStatus.Success)
+            {
+                Console.WriteLine(
+                    "CObs build: access exception registering Build: "
+                  + registerStatus.Message
+                );
+
+                ExitCObs(client, keyToExit, false);
+            }
+
             int jobNumber = 1;
 
             foreach (var job in builder.BuildQueue)
             {
-                var nOfm = "Cobs build ("
+                var nOfm = "CObs build ("
                     + jobNumber
                     + "/"
                     + builder.BuildQueue.Count

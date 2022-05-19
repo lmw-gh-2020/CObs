@@ -532,8 +532,10 @@ namespace CObs
             var medianTimeToMortalityMax = (new AllScenarios()).MedianTimeToMortalityValues.Max();
             var nextBuildDay              = BaseDays.DaysRaw.Last().Date.AddDays(1);
 
-            if (BuildFrom >= BaseDays.DaysRaw.Last().Date.AddDays(1))
-            {
+            if (
+                (WithSeries)
+            &&  (BuildFrom >= BaseDays.DaysRaw.Last().Date.AddDays(1))
+            ) {
                 /* no jobs to queue (time series up-to-date) */
                 return readResult;
             }
@@ -585,6 +587,9 @@ namespace CObs
                 }
                 else
                 {
+                    MinSeriesIndex = BuildFromIndex = MaxSeriesIndex
+                        = BaseDays.DaysRaw.Last().TimelineIndex;
+
                     BuildQueue.Add(new BuildJob(
                          BaseDays.ReadAdapter
                         ,CommitAdapter
