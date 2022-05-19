@@ -239,7 +239,7 @@ namespace CObs
             {
                 Console.WriteLine(
                     "CObs build: exception committing Results Data: "
-                  + readStatus.Message
+                  + commitStatus.Message
                 );
             }
             else

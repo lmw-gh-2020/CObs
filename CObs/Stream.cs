@@ -638,11 +638,13 @@ namespace CObs
             #pragma warning restore IDE1006
 
             public ResultsDayBySeries(
-                 BuildJob   pBuildJob
+                 Uuid       pBuildEventID
+                ,BuildJob   pBuildJob
                 ,ResultsDay pResultsDay
             ) {
                 t = new string[] {
-                     pBuildJob.TimeSeriesIndex.ToString()
+                     pBuildEventID.ToString()
+                    ,pBuildJob.TimeSeriesIndex.ToString()
                     ,pBuildJob.TimeSeriesDay.ToString("yyyy-MM-dd")
                     ,pResultsDay.TimelineIndex.ToString()
                     ,pResultsDay.Date.ToString("yyyy-MM-dd")
@@ -681,12 +683,14 @@ namespace CObs
 
         class AggregatesBySeries
         {
+            public string     BuildEventID    { get; private set; }
             public int        TimeSeriesIndex { get; private set; }
             public DateTime   TimeSeriesDay   { get; private set; }
             public Aggregates Aggregates      { get; private set; }
 
-            public AggregatesBySeries(BuildJob pBuildJob)
+            public AggregatesBySeries(Uuid pBuildEventID, BuildJob pBuildJob)
             {
+                BuildEventID    = pBuildEventID.ToString();
                 TimeSeriesIndex = pBuildJob.TimeSeriesIndex;
                 TimeSeriesDay   = pBuildJob.TimeSeriesDay;
                 Aggregates      = pBuildJob.Aggregates;
@@ -801,16 +805,18 @@ namespace CObs
                 );
             }
 
-            var results = new List<EventData>();
+            var cursor = BuildPosition;
 
             foreach (var job in pBuildQueue)
             {
+                var results = new List<EventData>();
+
                 results.AddRange(job.ResultsDays.Select(day => {
                     return new EventData(
                          Uuid.NewUuid()
                         ,"results-day-received"
                         ,JsonSerializer.SerializeToUtf8Bytes(
-                            new ResultsDayBySeries(job, day)
+                            new ResultsDayBySeries(BuildEventID, job, day)
                         )
                     );
                 }).ToList());
@@ -820,44 +826,49 @@ namespace CObs
                          Uuid.NewUuid()
                         ,"aggregates-received"
                         ,JsonSerializer.SerializeToUtf8Bytes(
-                            new AggregatesBySeries(job)
+                            new AggregatesBySeries(BuildEventID, job)
                         )
                     )
                 );
-            }
 
-            results.Add(
-                new EventData(
-                     Uuid.NewUuid()
-                    ,"results-ready"
-                    ,JsonSerializer.SerializeToUtf8Bytes(
-                        new ResultsReady(
-                             BuildEventID
-                            ,BuildPosition
-                            ,pCheckpointID
-                            ,pReadPosition
-                            ,pMinSeriesIndex
-                            ,pBuildFromIndex
-                            ,pMaxSeriesIndex
+                if (job == pBuildQueue.Last())
+                {
+                    results.Add(
+                        new EventData(
+                             Uuid.NewUuid()
+                            ,"results-ready"
+                            ,JsonSerializer.SerializeToUtf8Bytes(
+                                new ResultsReady(
+                                     BuildEventID
+                                    ,BuildPosition
+                                    ,pCheckpointID
+                                    ,pReadPosition
+                                    ,pMinSeriesIndex
+                                    ,pBuildFromIndex
+                                    ,pMaxSeriesIndex
+                                )
+                            )
                         )
-                    )
-                )
-            );
+                    );
+                }
 
-            try
-            {
-                await Client.AppendToStreamAsync(
-                     StreamName + "-results"
-                    ,BuildPosition
-                    ,results
-                );
-            }
-            catch (Exception e)
-            {
-                return new CommitActionResult(
-                     false
-                    ,"exception appending results to stream: " + e.Message
-                );
+                try
+                {
+                    var result = await Client.AppendToStreamAsync(
+                         StreamName + "-results"
+                        ,cursor
+                        ,results
+                    );
+
+                    cursor = result.NextExpectedStreamRevision;
+                }
+                catch (Exception e)
+                {
+                    return new CommitActionResult(
+                         false
+                        ,"exception appending results to stream: " + e.Message
+                    );
+                }
             }
 
             try
