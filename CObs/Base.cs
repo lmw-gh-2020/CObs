@@ -369,7 +369,6 @@ namespace CObs
                         ,0
                         ,SourceRowValidationStatus.ExceptionReadingEvents
                     )
-                    ,0
                     ,Uuid.Empty
                     ,DateTime.Today
                 );

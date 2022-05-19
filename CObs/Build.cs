@@ -493,7 +493,6 @@ namespace CObs
         public  bool               WithSeries     { get; private set; }
         public  List<BuildJob>     BuildQueue     { get; private set; }
 
-        private ulong              ReadPosition   { get; set; }
         private Uuid               CheckpointID   { get; set; }
         private int                MinSeriesIndex { get; set; }
         private int                BuildFromIndex { get; set; }
@@ -510,7 +509,6 @@ namespace CObs
 
             BuildFrom     = DateTime.Today;
             BuildQueue    = new List<BuildJob>();
-            ReadPosition  = 0;
             CheckpointID  = Uuid.Empty;
         }
 
@@ -526,7 +524,6 @@ namespace CObs
             if (!readResult.Success) { return readResult; }
 
             BuildFrom     = readResult.BuildFrom;
-            ReadPosition  = readResult.ReadPosition;
             CheckpointID  = readResult.LastSeenCheckpoint;
 
             var medianTimeToMortalityMax = (new AllScenarios()).MedianTimeToMortalityValues.Max();
@@ -601,11 +598,11 @@ namespace CObs
             return readResult;
         }
 
-        public async Task<ICommitActionResult> CommitResultsAsync()
+        public async Task<ICommitActionResult> CommitResultsAsync(BuildJob pJob)
         {
             return await CommitAdapter.CommitResultsAsync(
                  BuildQueue
-                ,ReadPosition
+                ,pJob
                 ,CheckpointID
                 ,MinSeriesIndex
                 ,BuildFromIndex

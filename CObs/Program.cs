@@ -228,30 +228,29 @@ namespace CObs
 
                 job.ExtractAggregates();
 
-                jobNumber++;
-            }
+                if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 
-            if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
-
-            Console.WriteLine(
-                "CObs build: committing results..."
-            );
-
-            var commitStatus = await builder.CommitResultsAsync();
-
-            if (!commitStatus.Success)
-            {
                 Console.WriteLine(
-                    "CObs build: exception committing Results Data: "
-                  + commitStatus.Message
+                    nOfm + "committing results..."
                 );
-            }
-            else
-            {
-                Console.WriteLine("CObs build: Done.");
-            }
 
-            ExitCObs(client, keyToExit, commitStatus.Success);
+                var commitStatus = await builder.CommitResultsAsync(job);
+
+                if (!commitStatus.Success)
+                {
+                    Console.WriteLine(
+                        nOfm
+                      + "exception committing Results Data: "
+                      + commitStatus.Message
+                    );
+                }
+
+                jobNumber++;
+            }          
+            
+            Console.WriteLine("CObs build: Done.");
+
+            ExitCObs(client, keyToExit, true);
         }
     }
 }
