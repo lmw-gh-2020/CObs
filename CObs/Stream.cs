@@ -32,14 +32,19 @@ namespace CObs
     public interface ICommitEventsAsync
     {
         Task<bool>                IsBuildDequeued();
-        Task<ICommitActionResult> RegisterBuild();
+        Task<ICommitActionResult> RegisterBuild(
+             Uuid                 pCheckpoint
+            ,int                  pMinSeriesIndex
+            ,int                  pBuildFromIndex
+            ,int                  pMaxSeriesIndex
+        );
         Task<ICommitActionResult> CommitResultsAsync(
-             List<BuildJob> pBuildQueue
-            ,BuildJob       pJob
-            ,Uuid           pCheckpoint
-            ,int            pMinSeriesIndex
-            ,int            pBuildFromIndex
-            ,int            pMaxSeriesIndex
+             BuildJob             pBuildJob
+            ,LinkedList<BuildJob> pBuildQueue
+            ,Uuid                 pCheckpoint
+            ,int                  pMinSeriesIndex
+            ,int                  pBuildFromIndex
+            ,int                  pMaxSeriesIndex
         );
     }
 
@@ -84,10 +89,15 @@ namespace CObs
 
     public class CheckpointClear
     {
-        public string CheckpointID { get; private set; }
+        public string CheckpointID       { get; private set; }
+        public ulong  FinalSlicePosition { get; private set; }
 
-        public CheckpointClear(Uuid pCheckpointID) {
-            CheckpointID = pCheckpointID.ToString();
+        public CheckpointClear(
+             Uuid           pCheckpointID
+            ,StreamRevision pFinalSlicePosition
+        ) {
+            CheckpointID       = pCheckpointID.ToString();
+            FinalSlicePosition = pFinalSlicePosition.ToUInt64();
         }
     }
 
@@ -185,8 +195,12 @@ namespace CObs
             return Task.FromResult(false);
         }
 
-        public Task<ICommitActionResult> RegisterBuild()
-        {
+        public Task<ICommitActionResult> RegisterBuild(
+             Uuid pCheckpoint
+            ,int  pMinSeriesIndex
+            ,int  pBuildFromIndex
+            ,int  pMaxSeriesIndex
+        ) {
             return Task.FromResult(
                 new CommitActionResult(true, "") as ICommitActionResult
             );
@@ -338,18 +352,18 @@ namespace CObs
         }
 
         public async Task<ICommitActionResult> CommitResultsAsync(
-             List<BuildJob> pBuildQueue
-            ,BuildJob       pJob
-            ,Uuid           pCheckpoint
-            ,int            pMinSeriesIndex
-            ,int            pBuildFromIndex
-            ,int            pMaxSeriesIndex
+             BuildJob             pJob
+            ,LinkedList<BuildJob> pBuildQueue
+            ,Uuid                 pCheckpoint
+            ,int                  pMinSeriesIndex
+            ,int                  pBuildFromIndex
+            ,int                  pMaxSeriesIndex
         ) {
-            var result = await CommitResultsDaysAsync(pBuildQueue[0].ResultsDays);
+            var result = await CommitResultsDaysAsync(pJob.ResultsDays);
 
             if (!result.Success) { return result; }
 
-            return await CommitAggregatesAsync(pBuildQueue[0].Aggregates);
+            return await CommitAggregatesAsync(pJob.Aggregates);
         }
     }
 
@@ -699,22 +713,40 @@ namespace CObs
     {
         class BuildEvent
         {
-            public DateTime Timestamp { get; private set; }
+            public DateTime Timestamp      { get; private set; }
+            public string   CheckpointID   { get; private set; }
+            public int      MinSeriesIndex { get; private set; }
+            public int      BuildFromIndex { get; private set; }
+            public int      MaxSeriesIndex { get; private set; }
 
-            public BuildEvent() { Timestamp = DateTime.Now; }
+            public BuildEvent(
+                 Uuid pCheckpointID
+                ,int  pMinSeriesIndex
+                ,int  pBuildFromIndex
+                ,int  pMaxSeriesIndex
+            ) {
+                Timestamp      = DateTime.Now;
+                CheckpointID   = pCheckpointID.ToString();
+                MinSeriesIndex = pMinSeriesIndex;
+                BuildFromIndex = pBuildFromIndex;
+                MaxSeriesIndex = pMaxSeriesIndex;
+            }
         }
 
         class CheckpointProgressMark
         {
             public string CheckpointID           { get; private set; }
             public int    TimeSeriesHandledIndex { get; private set; }
+            public ulong  SlicePosition          { get; private set; }
 
             public CheckpointProgressMark(
-                 Uuid pCheckpointID
-                ,int pTimeSeriesHandledIndex
+                 Uuid           pCheckpointID
+                ,int            pTimeSeriesHandledIndex
+                ,StreamRevision pSlicePosition
             ) {
                 CheckpointID           = pCheckpointID.ToString();
                 TimeSeriesHandledIndex = pTimeSeriesHandledIndex;
+                SlicePosition          = pSlicePosition;
             }
         }
 
@@ -830,8 +862,12 @@ namespace CObs
             BuildPosition = new StreamRevision();
         }
 
-        public async Task<ICommitActionResult> RegisterBuild()
-        {
+        public async Task<ICommitActionResult> RegisterBuild(
+             Uuid pCheckpoint
+            ,int  pMinSeriesIndex
+            ,int  pBuildFromIndex
+            ,int  pMaxSeriesIndex
+        ) {
             try
             {
                 BuildEventID = Uuid.NewUuid();
@@ -843,7 +879,12 @@ namespace CObs
                          BuildEventID
                         ,"build-event"
                         ,JsonSerializer.SerializeToUtf8Bytes(
-                            new BuildEvent()
+                            new BuildEvent(
+                                 pCheckpoint
+                                ,pMinSeriesIndex
+                                ,pBuildFromIndex
+                                ,pMaxSeriesIndex
+                            )
                         )
                     ) }
                 );
@@ -883,21 +924,13 @@ namespace CObs
         }
 
         public async Task<ICommitActionResult> CommitResultsAsync(
-             List<BuildJob> pBuildQueue
-            ,BuildJob       pJob
-            ,Uuid           pCheckpointID
-            ,int            pMinSeriesIndex
-            ,int            pBuildFromIndex
-            ,int            pMaxSeriesIndex
+             BuildJob             pJob
+            ,LinkedList<BuildJob> pBuildQueue
+            ,Uuid                 pCheckpointID
+            ,int                  pMinSeriesIndex
+            ,int                  pBuildFromIndex
+            ,int                  pMaxSeriesIndex
         ) {
-            if (pBuildQueue.Count == 0)
-            {
-                return new CommitActionResult(
-                     false
-                    ,"build queue was empty"
-                );
-            }
-
             var results = new List<EventData>();
 
             results.AddRange(pJob.ResultsDays.Select(day => {
@@ -946,6 +979,8 @@ namespace CObs
                 )
             );
 
+            StreamRevision position = BuildPosition;
+
             try
             {
                 var result = await Client.AppendToStreamAsync(
@@ -965,7 +1000,7 @@ namespace CObs
             }
 
             try {
-                if (pJob != pBuildQueue.Last())
+                if (pBuildQueue.Count > 0)
                 {
                     await Client.AppendToStreamAsync(
                          StreamName + "-source"
@@ -978,6 +1013,7 @@ namespace CObs
                                     new CheckpointProgressMark(
                                          pCheckpointID
                                         ,pJob.TimeSeriesIndex
+                                        ,position
                                     )
                                 )
                             )
@@ -994,7 +1030,7 @@ namespace CObs
                                  Uuid.NewUuid()
                                 ,"checkpoint-clear"
                                 ,JsonSerializer.SerializeToUtf8Bytes(
-                                    new CheckpointClear(pCheckpointID)
+                                    new CheckpointClear(pCheckpointID, position)
                                 )
                             )
                         }

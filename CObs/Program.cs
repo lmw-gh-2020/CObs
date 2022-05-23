@@ -157,7 +157,10 @@ namespace CObs
 
             if (builder.BuildQueue.Count == 0)
             {
-                Console.WriteLine("CObs build: job queue is empty (series up-to-date).");
+                Console.WriteLine(
+                    "CObs build: job queue is empty"
+                  + ((series) ? " (series up-to-date)." : ".")
+                );
 
                 ExitCObs(client, keyToExit, true);
             }
@@ -178,14 +181,18 @@ namespace CObs
                 ExitCObs(client, keyToExit, false);
             }
 
-            int jobNumber = 1;
+            int                   jobNumber = 1;
+            int                   totalJobs = builder.BuildQueue.Count;
+            BuildQueueShiftResult currentJob;
 
-            foreach (var job in builder.BuildQueue)
+            while ((currentJob = builder.ShiftBuildQueue()).QueueHasItems)
             {
+                var job = currentJob.Job;
+
                 var nOfm = "CObs build ("
                     + jobNumber
                     + "/"
-                    + builder.BuildQueue.Count
+                    + totalJobs
                     + "): ";
 
                 if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
@@ -194,7 +201,7 @@ namespace CObs
                     nOfm + "populating rolling averages..."
                 );
 
-                job.PopulateRolling();
+                job!.PopulateRolling();
 
                 if (await builder.CommitAdapter.IsBuildDequeued()) { Environment.Exit(1); }
 

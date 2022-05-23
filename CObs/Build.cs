@@ -485,18 +485,32 @@ namespace CObs
         }
     }
 
+    public class BuildQueueShiftResult
+    {
+        public bool      QueueHasItems { get; private set; }
+        public BuildJob? Job           { get; private set; }
+
+        public BuildQueueShiftResult(
+             bool      pQueueHasItems
+            ,BuildJob? pBuildJob
+        ) {
+            QueueHasItems = pQueueHasItems;
+            Job           = pBuildJob;
+        }
+    }
+
     public class Builder
     {
-        public  ICommitEventsAsync CommitAdapter  { get; private set; }
-        public  BaseDays           BaseDays       { get; private set; }
-        public  DateTime           BuildFrom      { get; private set; }
-        public  bool               WithSeries     { get; private set; }
-        public  List<BuildJob>     BuildQueue     { get; private set; }
+        public  ICommitEventsAsync   CommitAdapter  { get; private set; }
+        public  BaseDays             BaseDays       { get; private set; }
+        public  DateTime             BuildFrom      { get; private set; }
+        public  bool                 WithSeries     { get; private set; }
+        public  LinkedList<BuildJob> BuildQueue     { get; private set; }
 
-        private Uuid               CheckpointID   { get; set; }
-        private int                MinSeriesIndex { get; set; }
-        private int                BuildFromIndex { get; set; }
-        private int                MaxSeriesIndex { get; set; }
+        private Uuid                 CheckpointID   { get; set; }
+        private int                  MinSeriesIndex { get; set; }
+        private int                  BuildFromIndex { get; set; }
+        private int                  MaxSeriesIndex { get; set; }
 
         public Builder(
              ICommitEventsAsync pCommitAdapter
@@ -508,13 +522,17 @@ namespace CObs
             WithSeries    = pWithSeries;
 
             BuildFrom     = DateTime.Today;
-            BuildQueue    = new List<BuildJob>();
+            BuildQueue    = new LinkedList<BuildJob>();
             CheckpointID  = Uuid.Empty;
         }
 
-        public async Task<ICommitActionResult> RegisterBuild()
-        {
-            return await CommitAdapter.RegisterBuild();
+        public async Task<ICommitActionResult> RegisterBuild() {
+            return await CommitAdapter.RegisterBuild(
+                 CheckpointID
+                ,MinSeriesIndex
+                ,BuildFromIndex
+                ,MaxSeriesIndex
+            );
         }
 
         public async Task<IReadActionResult> ReadDaysRawAsync()
@@ -572,7 +590,7 @@ namespace CObs
 
                         if (daysRaw.Count > medianTimeToMortalityMax)
                         {
-                            BuildQueue.Add(new BuildJob(
+                            BuildQueue.AddLast(new BuildJob(
                                  BaseDays.ReadAdapter
                                 ,CommitAdapter
                                 ,daysRaw
@@ -587,7 +605,7 @@ namespace CObs
                     MinSeriesIndex = BuildFromIndex = MaxSeriesIndex
                         = BaseDays.DaysRaw.Last().TimelineIndex;
 
-                    BuildQueue.Add(new BuildJob(
+                    BuildQueue.AddLast(new BuildJob(
                          BaseDays.ReadAdapter
                         ,CommitAdapter
                         ,BaseDays.DaysRaw
@@ -598,11 +616,25 @@ namespace CObs
             return readResult;
         }
 
+        public BuildQueueShiftResult ShiftBuildQueue()
+        {
+            if (BuildQueue.Count == 0)
+            {
+                return new BuildQueueShiftResult(false, null);
+            }
+
+            var job = BuildQueue.First!.Value;
+
+            BuildQueue.RemoveFirst();
+
+            return new BuildQueueShiftResult(true, job);
+        }
+
         public async Task<ICommitActionResult> CommitResultsAsync(BuildJob pJob)
         {
             return await CommitAdapter.CommitResultsAsync(
-                 BuildQueue
-                ,pJob
+                 pJob
+                ,BuildQueue
                 ,CheckpointID
                 ,MinSeriesIndex
                 ,BuildFromIndex
